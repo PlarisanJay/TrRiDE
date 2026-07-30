@@ -1,0 +1,262 @@
+<!DOCTYPE html><html class="light" lang="en"><head>
+<meta charset="utf-8">
+<meta content="width=device-width, initial-scale=1.0" name="viewport">
+<title>Messages - TriRide</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "outline": "#737686",
+                    "inverse-primary": "#b4c5ff",
+                    "on-secondary-fixed": "#002113",
+                    "on-secondary-fixed-variant": "#005236",
+                    "secondary-fixed-dim": "#4edea3",
+                    "primary-fixed-dim": "#b4c5ff",
+                    "on-tertiary-container": "#ffeedd",
+                    "on-error": "#ffffff",
+                    "on-primary": "#ffffff",
+                    "surface-container-low": "#f3f3fe",
+                    "surface-container": "#ededf9",
+                    "error-container": "#ffdad6",
+                    "on-surface-variant": "#434655",
+                    "surface": "#faf8ff",
+                    "on-secondary-container": "#00714d",
+                    "on-surface": "#191b23",
+                    "primary-container": "#2563eb",
+                    "secondary": "#006c49",
+                    "on-tertiary-fixed-variant": "#653e00",
+                    "on-secondary": "#ffffff",
+                    "tertiary": "#784b00",
+                    "inverse-on-surface": "#f0f0fb",
+                    "primary": "#004ac6",
+                    "tertiary-container": "#996100",
+                    "surface-tint": "#0053db",
+                    "on-tertiary-fixed": "#2a1700",
+                    "tertiary-fixed-dim": "#ffb95f",
+                    "on-error-container": "#93000a",
+                    "secondary-container": "#6cf8bb",
+                    "surface-dim": "#d9d9e5",
+                    "on-tertiary": "#ffffff",
+                    "on-primary-fixed-variant": "#003ea8",
+                    "secondary-fixed": "#6ffbbe",
+                    "surface-container-high": "#e7e7f3",
+                    "inverse-surface": "#2e3039",
+                    "error": "#ba1a1a",
+                    "tertiary-fixed": "#ffddb8",
+                    "on-primary-container": "#eeefff",
+                    "surface-container-highest": "#e1e2ed",
+                    "background": "#faf8ff",
+                    "surface-variant": "#e1e2ed",
+                    "on-primary-fixed": "#00174b",
+                    "on-background": "#191b23",
+                    "outline-variant": "#c3c6d7",
+                    "surface-bright": "#faf8ff",
+                    "surface-container-lowest": "#ffffff",
+                    "primary-fixed": "#dbe1ff"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.25rem",
+                    "lg": "0.5rem",
+                    "xl": "0.75rem",
+                    "full": "9999px"
+            },
+            "spacing": {
+                    "margin-desktop": "24px",
+                    "margin-mobile": "16px",
+                    "md": "16px",
+                    "xs": "4px",
+                    "gutter": "16px",
+                    "sm": "8px",
+                    "base": "8px",
+                    "lg": "24px",
+                    "xl": "32px"
+            },
+            "fontFamily": {
+                    "body": ["Inter"],
+                    "section-title": ["Inter"],
+                    "button": ["Inter"],
+                    "headline-md": ["Inter"],
+                    "nav-label": ["Inter"],
+                    "headline-lg-mobile": ["Inter"],
+                    "caption": ["Inter"],
+                    "headline-lg": ["Inter"]
+            },
+            "fontSize": {
+                    "body": ["16px", {"lineHeight": "24px", "fontWeight": "400"}],
+                    "section-title": ["18px", {"lineHeight": "24px", "fontWeight": "600"}],
+                    "button": ["16px", {"lineHeight": "20px", "fontWeight": "600"}],
+                    "headline-md": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+                    "nav-label": ["11px", {"lineHeight": "16px", "fontWeight": "500"}],
+                    "headline-lg-mobile": ["28px", {"lineHeight": "36px", "fontWeight": "700"}],
+                    "caption": ["13px", {"lineHeight": "18px", "fontWeight": "400"}],
+                    "headline-lg": ["32px", {"lineHeight": "40px", "letterSpacing": "-0.02em", "fontWeight": "700"}]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            vertical-align: middle;
+        }
+        .chat-container {
+            height: calc(100vh - 144px); /* Screen - TopBar - InputArea */
+        }
+        @media (min-width: 768px) {
+            .chat-container {
+                height: calc(100vh - 80px - 88px);
+            }
+        }
+        .diffusion-shadow {
+            box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.08);
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background font-body text-on-background antialiased overflow-hidden">
+<!-- Top AppBar (Mobile/Web Hybrid via JSON spec) -->
+<header class="flex justify-between items-center h-16 px-margin-mobile w-full fixed top-0 z-50 bg-surface dark:bg-inverse-surface border-b border-outline-variant dark:border-outline">
+<div class="flex items-center gap-4">
+<button class="text-on-surface-variant dark:text-surface-variant transition-colors duration-200 hover:bg-surface-container-high dark:hover:bg-surface-variant p-2 rounded-full">
+<span class="material-symbols-outlined">arrow_back</span>
+</button>
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded-full overflow-hidden border border-outline-variant">
+<img class="w-full h-full object-cover" data-alt="A professional close-up portrait of a friendly tricycle driver in a clean uniform, smiling warmly against a bright, modern city backdrop. The lighting is soft and natural, emphasizing trust and reliability. High-resolution photography style with a clean, high-key aesthetic matching a premium transportation service interface." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAHrUqjh1_Dx4CkinxDH3eCGrHOyBvrRGV9U1UHJcRzRJwhCIo7_o4TeJZsp99lQMHSq1FDGq1PMI1b-M-8DGidadi_qVzhqNInzwMPDWULfRTGV2hF8G356GRWEDoqx-p7tS_CACxa3KbUQfWPmcuPgwrH2B2He5eyfzBoURSa9IltfRFo7a2VXVdsRaGnxut_1J6rOdO0ENTtoMcTif7X3t3mmyggaBqHRdKMFFVKz3bo7jJ40oaAlaF7_sty6hiZ7prXgkuMbYM">
+</div>
+<div>
+<h1 class="font-headline-md text-[18px] font-bold text-primary dark:text-inverse-primary leading-tight">Ricardo D.</h1>
+<p class="font-caption text-caption text-on-surface-variant">Active now</p>
+</div>
+</div>
+</div>
+<div class="flex gap-2">
+<button class="text-on-surface-variant transition-colors duration-200 hover:bg-surface-container-high p-2 rounded-full">
+<span class="material-symbols-outlined">call</span>
+</button>
+<button class="text-on-surface-variant transition-colors duration-200 hover:bg-surface-container-high p-2 rounded-full">
+<span class="material-symbols-outlined">more_vert</span>
+</button>
+</div>
+</header>
+<!-- Main Chat Canvas -->
+<main class="pt-16 pb-20 md:pb-24 overflow-y-auto chat-container bg-surface-container-lowest">
+<div class="max-w-3xl mx-auto px-margin-mobile py-lg space-y-lg flex flex-col">
+<!-- Date Separator -->
+<div class="flex justify-center my-base">
+<span class="bg-surface-container-high text-on-surface-variant px-md py-xs rounded-full font-caption text-[11px] uppercase tracking-wider">Today</span>
+</div>
+<!-- Receiver Message (Driver) -->
+<div class="flex flex-col items-start max-w-[85%] md:max-w-[70%]">
+<div class="bg-surface-container text-on-surface px-md py-base rounded-[16px] rounded-tl-none border border-outline-variant/30">
+<p class="text-body font-body">Hello! I'm already at the pickup point near the university gate. Where exactly are you?</p>
+</div>
+<div class="flex items-center gap-sm mt-xs px-xs">
+<span class="font-caption text-[11px] text-outline">10:15 AM</span>
+</div>
+</div>
+<!-- Sender Message (User) -->
+<div class="flex flex-col items-end self-end max-w-[85%] md:max-w-[70%]">
+<div class="bg-primary-container text-on-primary-container px-md py-base rounded-[16px] rounded-tr-none shadow-sm">
+<p class="text-body font-body">I'm just walking out of the Engineering building. Give me 2 minutes, please!</p>
+</div>
+<div class="flex items-center gap-xs mt-xs px-xs">
+<span class="font-caption text-[11px] text-outline">10:16 AM</span>
+<span class="material-symbols-outlined text-[14px] text-primary" style="font-variation-settings: 'FILL' 1;">done_all</span>
+</div>
+</div>
+<!-- Receiver Message (Driver) -->
+<div class="flex flex-col items-start max-w-[85%] md:max-w-[70%]">
+<div class="bg-surface-container text-on-surface px-md py-base rounded-[16px] rounded-tl-none border border-outline-variant/30">
+<p class="text-body font-body">No worries. Take your time. I've parked right in front of the convenience store.</p>
+</div>
+<div class="flex items-center gap-sm mt-xs px-xs">
+<span class="font-caption text-[11px] text-outline">10:17 AM</span>
+</div>
+</div>
+<!-- Image Attachment (Sender) -->
+<div class="flex flex-col items-end self-end max-w-[85%] md:max-w-[70%]">
+<div class="rounded-[16px] overflow-hidden border border-outline-variant diffusion-shadow">
+<div class="w-full aspect-video bg-cover bg-center" data-alt="A clean, minimalist high-angle shot of a modern university campus courtyard with paved walkways and green landscaping under bright, clear daylight. The scene conveys a sense of safety and structured academic environment with the blue sky reflecting off glass windows of a contemporary building." style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuBHuNqDQgSJZsAK1xCJ4uGhIVoEcMrVOpDcyzoOIGCGVizLoh99O1Nwz8bcfQDm-CEy0wO5vQcUAIi2WXAI6IyL4wDgREVegnp38z6vuMc3jOfp_DKrAjsXayaq8jkHiuBRK8KEIoKlGONGmU2N249cDGUlCSn_tBkrAF_l1tQDJYAQjz7zsSq60IgrEnXubfyllLw145bvRHnWHnwx1nanN7Dh2KKD64Ac10aFyYMLAfvLXBuhIFhNgqVRZOGtcN9oI65iTMSsdYQ')"></div>
+<div class="bg-primary-container text-on-primary-container px-md py-base rounded-b-[16px]">
+<p class="text-body font-body">Just passed this fountain. Almost there.</p>
+</div>
+</div>
+<div class="flex items-center gap-xs mt-xs px-xs">
+<span class="font-caption text-[11px] text-outline">10:19 AM</span>
+<span class="material-symbols-outlined text-[14px] text-primary" style="font-variation-settings: 'FILL' 1;">done_all</span>
+</div>
+</div>
+<!-- Receiver Typing Indicator (Simulated Interaction) -->
+<div class="flex items-center gap-sm px-xs opacity-0 transition-opacity duration-300" id="typing-indicator">
+<div class="flex gap-1">
+<div class="w-1.5 h-1.5 bg-outline rounded-full animate-bounce"></div>
+<div class="w-1.5 h-1.5 bg-outline rounded-full animate-bounce [animation-delay:0.2s]"></div>
+<div class="w-1.5 h-1.5 bg-outline rounded-full animate-bounce [animation-delay:0.4s]"></div>
+</div>
+<span class="font-caption text-[11px] text-outline italic">Ricardo is typing...</span>
+</div>
+</div>
+</main>
+<!-- Chat Input Bar -->
+<footer class="fixed bottom-0 w-full bg-surface dark:bg-inverse-surface border-t border-outline-variant dark:border-outline z-50">
+<div class="max-w-3xl mx-auto px-margin-mobile py-sm md:py-md flex items-end gap-base">
+<button class="p-2 text-primary hover:bg-surface-container-high rounded-full transition-colors">
+<span class="material-symbols-outlined">add_circle</span>
+</button>
+<div class="flex-1 bg-surface-container-low border border-outline-variant rounded-[24px] px-md py-sm flex items-center focus-within:border-primary-container focus-within:ring-1 focus-within:ring-primary-container transition-all">
+<textarea class="w-full bg-transparent border-none focus:ring-0 text-body py-1 resize-none max-h-32" oninput="this.style.height = ''; this.style.height = this.scrollHeight + 'px'" placeholder="Type a message..." rows="1"></textarea>
+<button class="ml-sm text-on-surface-variant hover:text-primary transition-colors">
+<span class="material-symbols-outlined">sentiment_satisfied</span>
+</button>
+</div>
+<button class="w-12 h-12 flex items-center justify-center bg-primary text-on-primary rounded-full diffusion-shadow hover:bg-primary-container active:scale-95 transition-all">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">send</span>
+</button>
+</div>
+</footer>
+<!-- Bottom Navigation Bar (Suppressed on Chat sub-page per policy "Task-Focused: Any sub-page featuring a 'Back' action") -->
+<!-- Navigation is hidden to prioritize the chat focused journey -->
+<script>
+        // Micro-interaction: Scroll to bottom on load
+        window.onload = () => {
+            const main = document.querySelector('main');
+            main.scrollTop = main.scrollHeight;
+
+            // Simulate typing indicator after a short delay
+            setTimeout(() => {
+                const indicator = document.getElementById('typing-indicator');
+                indicator.style.opacity = '1';
+                
+                // Hide it after some time to simulate message being sent or thought over
+                setTimeout(() => {
+                    indicator.style.opacity = '0';
+                }, 3000);
+            }, 1500);
+        };
+
+        // Micro-interaction: Send message effect (visual only)
+        const sendBtn = document.querySelector('button .material-symbols-outlined[style*="FILL"]');
+        if(sendBtn) {
+            sendBtn.parentElement.addEventListener('click', () => {
+                const textarea = document.querySelector('textarea');
+                if(textarea.value.trim() !== "") {
+                    // Logic for visual feedback could go here
+                    textarea.value = "";
+                    textarea.style.height = 'auto';
+                }
+            });
+        }
+    </script>
+</body></html>

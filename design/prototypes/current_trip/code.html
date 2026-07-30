@@ -1,0 +1,294 @@
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="utf-8">
+<meta content="width=device-width, initial-scale=1.0" name="viewport">
+<title>TriRide - Current Trip</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "outline": "#737686",
+                        "inverse-primary": "#b4c5ff",
+                        "on-secondary-fixed": "#002113",
+                        "on-secondary-fixed-variant": "#005236",
+                        "secondary-fixed-dim": "#4edea3",
+                        "primary-fixed-dim": "#b4c5ff",
+                        "on-tertiary-container": "#ffeedd",
+                        "on-error": "#ffffff",
+                        "on-primary": "#ffffff",
+                        "surface-container-low": "#f3f3fe",
+                        "surface-container": "#ededf9",
+                        "error-container": "#ffdad6",
+                        "on-surface-variant": "#434655",
+                        "surface": "#faf8ff",
+                        "on-secondary-container": "#00714d",
+                        "on-surface": "#191b23",
+                        "primary-container": "#2563eb",
+                        "secondary": "#006c49",
+                        "on-tertiary-fixed-variant": "#653e00",
+                        "on-secondary": "#ffffff",
+                        "tertiary": "#784b00",
+                        "inverse-on-surface": "#f0f0fb",
+                        "primary": "#004ac6",
+                        "tertiary-container": "#996100",
+                        "surface-tint": "#0053db",
+                        "on-tertiary-fixed": "#2a1700",
+                        "tertiary-fixed-dim": "#ffb95f",
+                        "on-error-container": "#93000a",
+                        "secondary-container": "#6cf8bb",
+                        "surface-dim": "#d9d9e5",
+                        "on-tertiary": "#ffffff",
+                        "on-primary-fixed-variant": "#003ea8",
+                        "secondary-fixed": "#6ffbbe",
+                        "surface-container-high": "#e7e7f3",
+                        "inverse-surface": "#2e3039",
+                        "error": "#ba1a1a",
+                        "tertiary-fixed": "#ffddb8",
+                        "on-primary-container": "#eeefff",
+                        "surface-container-highest": "#e1e2ed",
+                        "background": "#faf8ff",
+                        "surface-variant": "#e1e2ed",
+                        "on-primary-fixed": "#00174b",
+                        "on-background": "#191b23",
+                        "outline-variant": "#c3c6d7",
+                        "surface-bright": "#faf8ff",
+                        "surface-container-lowest": "#ffffff",
+                        "primary-fixed": "#dbe1ff"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "margin-desktop": "24px",
+                        "margin-mobile": "16px",
+                        "md": "16px",
+                        "xs": "4px",
+                        "gutter": "16px",
+                        "sm": "8px",
+                        "base": "8px",
+                        "lg": "24px",
+                        "xl": "32px"
+                    },
+                    "fontFamily": {
+                        "body": ["Inter"],
+                        "section-title": ["Inter"],
+                        "button": ["Inter"],
+                        "headline-md": ["Inter"],
+                        "nav-label": ["Inter"],
+                        "headline-lg-mobile": ["Inter"],
+                        "caption": ["Inter"],
+                        "headline-lg": ["Inter"]
+                    },
+                    "fontSize": {
+                        "body": ["16px", {"lineHeight": "24px", "fontWeight": "400"}],
+                        "section-title": ["18px", {"lineHeight": "24px", "fontWeight": "600"}],
+                        "button": ["16px", {"lineHeight": "20px", "fontWeight": "600"}],
+                        "headline-md": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+                        "nav-label": ["11px", {"lineHeight": "16px", "fontWeight": "500"}],
+                        "headline-lg-mobile": ["28px", {"lineHeight": "36px", "fontWeight": "700"}],
+                        "caption": ["13px", {"lineHeight": "18px", "fontWeight": "400"}],
+                        "headline-lg": ["32px", {"lineHeight": "40px", "letterSpacing": "-0.02em", "fontWeight": "700"}]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        body { font-family: 'Inter', sans-serif; }
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .diffusion-shadow {
+            box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.08), 0 4px 6px -4px rgba(0, 0, 0, 0.03);
+        }
+        .drag-handle {
+            width: 40px;
+            height: 4px;
+            background-color: #E2E8F0;
+            border-radius: 2px;
+            margin: 12px auto;
+        }
+        /* Custom map overlay for readability */
+        .map-overlay-gradient {
+            background: linear-gradient(to bottom, rgba(0,0,0,0.4) 0%, rgba(0,0,0,0) 20%, rgba(0,0,0,0) 80%, rgba(0,0,0,0.1) 100%);
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background text-on-background overflow-hidden h-screen w-screen flex flex-col">
+<!-- Header (TopAppBar) - Fixed as per shell rules -->
+<header class="flex justify-between items-center h-16 px-margin-mobile w-full fixed top-0 z-50 bg-surface dark:bg-inverse-surface border-b border-outline-variant dark:border-outline">
+<div class="flex items-center gap-4">
+<button class="p-2 rounded-full hover:bg-surface-container-high dark:hover:bg-surface-variant transition-colors duration-200">
+<span class="material-symbols-outlined text-primary dark:text-inverse-primary">menu</span>
+</button>
+<h1 class="font-headline-md text-headline-md font-bold text-primary dark:text-inverse-primary">TriRide</h1>
+</div>
+<div class="flex items-center gap-3">
+<div class="bg-secondary-container text-on-secondary-container px-3 py-1 rounded-full text-caption font-bold">
+                DRIVING
+            </div>
+<div class="w-10 h-10 rounded-full border-2 border-primary-container overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="A professional driver profile photo for a transportation app. The man in his late 30s is smiling warmly, wearing a clean, collared blue uniform shirt. The lighting is bright and natural, suggesting a safe and reliable service provider. The background is a soft-focus urban environment in a modern city during the daytime." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAeedCvOJi6L1fRIA6hkkY8JjPF6jVz3sVJBKc9-ZCgUKH6wzzn05HcyMRmRF7gzL39Q56jNdxoSj7_PWs6fYmD2szAEdcs8yHptbQOmMLzEXQs41jdfm4yM3CVpb7ACfE1Gkza7WjpsTThCrQ87GQM0PkcaPIXYJ98su-X3B79tkleYPJDuBlDj2uBA12CrDljqqFqld9r4X1cngNRTmn7RsbuKuenpo6T-kuZXl4ZOrbL6OXIUBI18DF6INPV8rxNQcbp4cWqv3s">
+</div>
+</div>
+</header>
+<!-- Full Screen Map Content -->
+<main class="relative flex-grow w-full mt-16 pb-[180px]">
+<!-- Map Visualization -->
+<div class="absolute inset-0 z-0">
+<div class="w-full h-full bg-cover bg-center" data-alt="A detailed digital street map of a bustling metropolitan area in Southeast Asia. The map shows a clear blue navigation line tracing a route through dense city blocks and main thoroughfares. Modern, minimalist cartography with soft grays and blues, highlighting key landmarks with subtle icons. Bright daylight lighting style consistent with a high-utility logistics interface." data-location="Manila, Philippines" style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuAFvDQTIU1THyIW1pcbe8qKCUh1WDOQWZbOOpfNfocZuz_npJmgGF6hfMP-4yatqZ7GQ0Ncw44WiUF4KoWG0ZFIEOrTwHwVAWasH9xNtA5Mg7P3M9MVc8d_f_gRLL2fC8Q2Vv0ZMjjv7_nmeU_TcSESemJ-Mm_6D1so4HIS5l-tOicDaVMRE-lBmYdotaEaFcsW0JfGQ2vtzm7AsZ1HRfpYeBqluaOdXxP4fNsKtDsiy0x-hYhVxKu_cy-w4SxxfyMBgh9DXXIMeFs')"></div>
+<!-- Overlay for legibility -->
+<div class="absolute inset-0 map-overlay-gradient pointer-events-none"></div>
+</div>
+<!-- Float Elements (Status & Nav Info) -->
+<div class="absolute top-4 left-margin-mobile right-margin-mobile z-10 flex flex-col gap-3">
+<div class="bg-surface/95 backdrop-blur-md p-4 rounded-xl border border-outline-variant diffusion-shadow flex items-center justify-between">
+<div class="flex items-center gap-4">
+<div class="bg-primary p-3 rounded-xl text-on-primary">
+<span class="material-symbols-outlined text-[32px]">navigation</span>
+</div>
+<div>
+
+<p class="font-section-title text-section-title">Avenue of the Philippines</p>
+</div>
+</div>
+<div class="text-right">
+<p class="font-headline-md text-headline-md text-primary">250m</p>
+</div>
+</div>
+<!-- Estimated Arrival Badge -->
+<div class="self-start bg-inverse-surface text-surface px-4 py-2 rounded-full text-caption font-bold flex items-center gap-2 diffusion-shadow">
+<span class="material-symbols-outlined text-[18px]">schedule</span>
+<span class="">Arriving in 8 mins (2.4 km)</span>
+</div>
+</div>
+</main>
+<!-- Bottom Sheet / Passenger Details Card -->
+<!-- Fixed position at bottom, layered over map -->
+<section class="fixed bottom-0 left-0 right-0 z-40 bg-surface border-t border-outline-variant rounded-t-[20px] diffusion-shadow transition-transform duration-300" id="tripCard">
+<div class="drag-handle"></div>
+<div class="px-margin-mobile pb-8 pt-2">
+<!-- Passenger Identity -->
+<div class="flex items-center justify-between mb-6">
+<div class="flex items-center gap-4">
+<div class="relative">
+<img class="w-16 h-16 rounded-2xl object-cover border border-outline-variant" data-alt="A friendly passenger profile avatar for a ride-sharing app. A young female student in her early 20s with a cheerful expression, wearing casual contemporary clothing. The image is a studio-style portrait with high-key, even lighting and a soft, pastel-colored background that feels approachable and professional." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAWW2Ew5JOK6nOmg_SJG8BEVpX7y2ZUfEKtKXMxMogPBDP4e7fD63R4g1cyM-fyZRdFind_L3t3lH7A5vx-2Yvtwnd8j24MSaYEpOATply1WyJtOZheswbXoxGCbjzXLaZRjLAmjByknus1xxBEXPpP1YWk7lLs76Q63-9nMPVjlnBVwxJn9NyWJdtchvkzrMM7D694V2ZgsD0nJMcOK9jUTd-vQm3hksugwMb8HfH_Q9-05OhH8-DbwrfIexPtuq7gk4KJbDQUJUE">
+<div class="absolute -bottom-1 -right-1 bg-secondary text-on-secondary w-6 h-6 rounded-full flex items-center justify-center text-[12px] font-bold border-2 border-surface">
+                            4.9
+                        </div>
+</div>
+<div>
+<h2 class="font-section-title text-section-title">Maria Santos</h2>
+
+</div>
+</div>
+<div class="flex gap-2">
+<button class="w-12 h-12 flex items-center justify-center rounded-xl border border-outline-variant text-primary hover:bg-surface-container-high transition-colors">
+<span class="material-symbols-outlined">call</span>
+</button>
+<button class="w-12 h-12 flex items-center justify-center rounded-xl border border-outline-variant text-primary hover:bg-surface-container-high transition-colors">
+<span class="material-symbols-outlined">chat</span>
+</button>
+</div>
+</div>
+<!-- Trip Locations -->
+<div class="space-y-4 mb-8">
+<div class="flex items-start gap-3">
+<div class="flex flex-col items-center mt-1">
+<div class="w-3 h-3 rounded-full border-2 border-primary bg-surface"></div>
+<div class="w-0.5 h-8 bg-outline-variant my-1"></div>
+<div class="w-3 h-3 rounded-full bg-error"></div>
+</div>
+<div class="flex-grow">
+<div class="mb-4">
+<p class="text-caption text-outline uppercase font-bold tracking-wider">Pickup</p>
+<p class="font-body text-body font-semibold">Greenbelt 3, Entrance</p>
+</div>
+<div>
+<p class="text-caption text-outline uppercase font-bold tracking-wider">Drop-off</p>
+<p class="font-body text-body font-semibold">University of the Philippines Diliman</p>
+</div>
+</div>
+</div>
+</div>
+<!-- Action Buttons -->
+<div class="grid grid-cols-2 gap-4">
+<button class="h-14 rounded-xl border border-error text-error font-button flex items-center justify-center gap-2 active:bg-error-container transition-colors">
+<span class="material-symbols-outlined">cancel</span>
+                    Cancel Trip
+                </button>
+<!-- START TRIP / COMPLETE TRIP TOGGLE BUTTON -->
+<button class="h-14 rounded-xl bg-primary text-on-primary font-button flex items-center justify-center gap-2 active:scale-[0.98] transition-all diffusion-shadow" id="mainActionButton" onclick="toggleTripState()">
+<span class="material-symbols-outlined" id="actionIcon">play_arrow</span>
+<span id="actionText" class="">Start Trip</span>
+</button>
+</div>
+</div>
+</section>
+<!-- Success Toast (Hidden by default) -->
+<div class="fixed top-20 left-1/2 -translate-x-1/2 z-[60] bg-secondary text-on-secondary px-6 py-3 rounded-full diffusion-shadow flex items-center gap-2 opacity-0 pointer-events-none transition-all duration-300" id="statusToast">
+<span class="material-symbols-outlined">check_circle</span>
+<span class="font-bold">Trip Started Successfully</span>
+</div>
+<script>
+        let isTripStarted = false;
+
+        function toggleTripState() {
+            const btn = document.getElementById('mainActionButton');
+            const icon = document.getElementById('actionIcon');
+            const text = document.getElementById('actionText');
+            const toast = document.getElementById('statusToast');
+
+            if (!isTripStarted) {
+                // Change to Complete state
+                isTripStarted = true;
+                btn.classList.remove('bg-primary');
+                btn.classList.add('bg-secondary');
+                icon.textContent = 'check';
+                text.textContent = 'Complete Trip';
+                
+                // Show toast
+                toast.classList.remove('opacity-0', 'pointer-events-none');
+                toast.classList.add('translate-y-2');
+                setTimeout(() => {
+                    toast.classList.add('opacity-0', 'pointer-events-none');
+                    toast.classList.remove('translate-y-2');
+                }, 3000);
+            } else {
+                // Logic for trip completion would go here (redirect, etc)
+                alert('Trip completed! Calculating fare...');
+                location.reload();
+            }
+        }
+
+        // Simple interaction for the bottom sheet
+        let startY = 0;
+        const card = document.getElementById('tripCard');
+        card.addEventListener('touchstart', e => startY = e.touches[0].clientY);
+        card.addEventListener('touchmove', e => {
+            const currentY = e.touches[0].clientY;
+            const diff = currentY - startY;
+            if (diff > 0) {
+                card.style.transform = `translateY(${diff}px)`;
+            }
+        });
+        card.addEventListener('touchend', () => {
+            card.style.transform = `translateY(0px)`;
+        });
+    </script>
+
+
+</body></html>

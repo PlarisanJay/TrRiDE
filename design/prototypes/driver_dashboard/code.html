@@ -1,0 +1,326 @@
+<!DOCTYPE html><html class="light" lang="en"><head>
+<meta charset="utf-8">
+<meta content="width=device-width, initial-scale=1.0" name="viewport">
+<title>TriRide Driver Dashboard</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "outline": "#737686",
+                    "inverse-primary": "#b4c5ff",
+                    "on-secondary-fixed": "#002113",
+                    "on-secondary-fixed-variant": "#005236",
+                    "secondary-fixed-dim": "#4edea3",
+                    "primary-fixed-dim": "#b4c5ff",
+                    "on-tertiary-container": "#ffeedd",
+                    "on-error": "#ffffff",
+                    "on-primary": "#ffffff",
+                    "surface-container-low": "#f3f3fe",
+                    "surface-container": "#ededf9",
+                    "error-container": "#ffdad6",
+                    "on-surface-variant": "#434655",
+                    "surface": "#faf8ff",
+                    "on-secondary-container": "#00714d",
+                    "on-surface": "#191b23",
+                    "primary-container": "#2563eb",
+                    "secondary": "#006c49",
+                    "on-tertiary-fixed-variant": "#653e00",
+                    "on-secondary": "#ffffff",
+                    "tertiary": "#784b00",
+                    "inverse-on-surface": "#f0f0fb",
+                    "primary": "#004ac6",
+                    "tertiary-container": "#996100",
+                    "surface-tint": "#0053db",
+                    "on-tertiary-fixed": "#2a1700",
+                    "tertiary-fixed-dim": "#ffb95f",
+                    "on-error-container": "#93000a",
+                    "secondary-container": "#6cf8bb",
+                    "surface-dim": "#d9d9e5",
+                    "on-tertiary": "#ffffff",
+                    "on-primary-fixed-variant": "#003ea8",
+                    "secondary-fixed": "#6ffbbe",
+                    "surface-container-high": "#e7e7f3",
+                    "inverse-surface": "#2e3039",
+                    "error": "#ba1a1a",
+                    "tertiary-fixed": "#ffddb8",
+                    "on-primary-container": "#eeefff",
+                    "surface-container-highest": "#e1e2ed",
+                    "background": "#faf8ff",
+                    "surface-variant": "#e1e2ed",
+                    "on-primary-fixed": "#00174b",
+                    "on-background": "#191b23",
+                    "outline-variant": "#c3c6d7",
+                    "surface-bright": "#faf8ff",
+                    "surface-container-lowest": "#ffffff",
+                    "primary-fixed": "#dbe1ff"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.25rem",
+                    "lg": "0.5rem",
+                    "xl": "0.75rem",
+                    "full": "9999px"
+            },
+            "spacing": {
+                    "margin-desktop": "24px",
+                    "margin-mobile": "16px",
+                    "md": "16px",
+                    "xs": "4px",
+                    "gutter": "16px",
+                    "sm": "8px",
+                    "base": "8px",
+                    "lg": "24px",
+                    "xl": "32px"
+            },
+            "fontFamily": {
+                    "body": ["Inter"],
+                    "section-title": ["Inter"],
+                    "button": ["Inter"],
+                    "headline-md": ["Inter"],
+                    "nav-label": ["Inter"],
+                    "headline-lg-mobile": ["Inter"],
+                    "caption": ["Inter"],
+                    "headline-lg": ["Inter"]
+            },
+            "fontSize": {
+                    "body": ["16px", {"lineHeight": "24px", "fontWeight": "400"}],
+                    "section-title": ["18px", {"lineHeight": "24px", "fontWeight": "600"}],
+                    "button": ["16px", {"lineHeight": "20px", "fontWeight": "600"}],
+                    "headline-md": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+                    "nav-label": ["11px", {"lineHeight": "16px", "fontWeight": "500"}],
+                    "headline-lg-mobile": ["28px", {"lineHeight": "36px", "fontWeight": "700"}],
+                    "caption": ["13px", {"lineHeight": "18px", "fontWeight": "400"}],
+                    "headline-lg": ["32px", {"lineHeight": "40px", "letterSpacing": "-0.02em", "fontWeight": "700"}]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        body { font-family: 'Inter', sans-serif; }
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            display: inline-block;
+            vertical-align: middle;
+        }
+        .diffusion-shadow {
+            box-shadow: 0 10px 40px -10px rgba(0, 0, 0, 0.08);
+        }
+        .glass-card {
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(226, 232, 240, 0.5);
+        }
+        .online-glow {
+            box-shadow: 0 0 15px rgba(16, 185, 129, 0.4);
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-surface text-on-surface min-h-screen pb-20">
+<!-- Top Navigation Bar -->
+<header class="flex justify-between items-center h-16 px-margin-mobile w-full fixed top-0 z-50 bg-surface dark:bg-inverse-surface border-b border-outline-variant dark:border-outline">
+<div class="flex items-center gap-sm">
+<span class="material-symbols-outlined text-primary dark:text-inverse-primary">menu</span>
+<h1 class="font-headline-md text-headline-md font-bold text-primary dark:text-inverse-primary">TriRide</h1>
+</div>
+<div class="flex items-center gap-md">
+<!-- Online/Offline Toggle -->
+<button class="relative inline-flex h-8 w-20 flex-shrink-0 cursor-pointer items-center rounded-full bg-outline-variant transition-colors duration-200 ease-in-out focus:outline-none online-glow bg-secondary" id="statusToggle" onclick="toggleStatus()">
+<span class="translate-x-12 inline-block h-6 w-6 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out" id="statusHandle" style="transform: translateX(3rem);"></span>
+<span class="absolute left-2 text-[10px] font-bold text-white uppercase" id="statusText">On</span>
+</button>
+<div class="w-8 h-8 rounded-full bg-surface-container-highest overflow-hidden border border-outline-variant">
+<img class="w-full h-full object-cover" data-alt="A professional headshot of a friendly tricycle driver wearing a clean uniform. He is smiling warmly at the camera. The background is a slightly blurred city street at golden hour, suggesting a busy but pleasant work environment. High-quality commercial photography style, clean and bright lighting." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAapAdirmGWcA1uH7PBnniOX5oiEplp-s7txc7CdTH8SAAW1vPtCpPdVrbLZHkcuGhvybf9x4lYIZ5BjWb0-uvlTrKHTVravtHc597m2pG6UBA9pd_hMrARmpy6ZenQQA-TmZkkz1k4oTJiRHPWgYgZbThFM0KWArTpE-xC-6t1B-tvsE8tp0c0zTqCLoCy2Tr4qyfkumRPsNSYTzdCwoy0YHii-24HoqR08mqcwbhRoKzbmMQvexxZGPvNj0IFPJQ8cZmrmetT8SQ">
+</div>
+</div>
+</header>
+<main class="pt-20 px-margin-mobile max-w-5xl mx-auto space-y-lg">
+<!-- Welcome Message -->
+<section>
+<h2 class="font-headline-lg-mobile text-headline-lg-mobile text-on-surface">Hello, Ricardo!</h2>
+<p class="font-body text-on-surface-variant">You're currently <span class="text-secondary font-bold" id="statusLabel">Online</span> and ready for rides.</p>
+</section>
+<!-- Stats Summary Bento Grid -->
+<section class="grid grid-cols-2 md:grid-cols-3 gap-md">
+
+<div class="bg-surface-container-lowest p-md rounded-xl border border-outline-variant diffusion-shadow flex flex-col gap-xs">
+<span class="material-symbols-outlined text-secondary">moped</span>
+<span class="font-caption text-on-surface-variant uppercase tracking-wider">Total Trips</span>
+<span class="font-headline-md text-headline-md text-on-surface">14</span>
+</div>
+<div class="col-span-2 md:col-span-1 bg-surface-container-lowest p-md rounded-xl border border-outline-variant diffusion-shadow flex flex-col gap-xs">
+<div class="flex items-center gap-xs">
+<span class="material-symbols-outlined text-tertiary" style="font-variation-settings: 'FILL' 1;">star</span>
+<span class="font-headline-md text-headline-md text-on-surface">4.92</span>
+</div>
+<span class="font-caption text-on-surface-variant uppercase tracking-wider">Driver Rating</span>
+<div class="h-1.5 w-full bg-surface-container-high rounded-full overflow-hidden mt-1">
+<div class="h-full bg-tertiary w-[92%] rounded-full"></div>
+</div>
+</div>
+</section>
+<!-- Main Map Area / Request Context -->
+<section class="relative h-[400px] rounded-2xl overflow-hidden border border-outline-variant diffusion-shadow bg-surface-container-high">
+<div class="absolute inset-0 z-0">
+<div class="w-full h-full bg-cover bg-center" data-alt="A clean, minimalist vector map of a dense urban environment in Manila, Philippines. The map uses a light-mode color palette with soft greys for roads and pale blues for water. Distinct markers show the driver's current position and nearby streets. Professional UI design aesthetic, high contrast for legibility." style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuDBnJQhBDysWGNtBTcjcQceLqItp4dh7ykER6BssRZruD4nnWz0jhK4CkyuGsIYsupS0LXZG8GJjSCsZfH3d8es1jJhZWEoxYDfQdnwaIXqw4ykzgzcyeoUFi41B85B8Wxh2E8GofHh6Z3zPhIBAPlaYotzdXB5j9NplRD08ybk6feBrOpNZWxe1LnvkRS-NVmV_CQwaeXi0F87bwNl6BcTl39BjGm2JW0_L2rePkfh1rhzWGCFHUx9dgpuXf6KtTI5-9hC6HO3qlw')"></div>
+</div>
+<!-- Incoming Booking Request Card -->
+<div class="absolute bottom-4 left-4 right-4 z-10 glass-card p-md rounded-2xl diffusion-shadow transform transition-all duration-500 translate-y-0 opacity-100" id="bookingRequest">
+<div class="flex items-center justify-between mb-md">
+<div class="flex items-center gap-md">
+<div class="w-12 h-12 rounded-full overflow-hidden bg-primary-fixed">
+<img class="w-full h-full object-cover" data-alt="A portrait of a young female college student with a friendly expression. She is carrying a backpack, suggesting she is heading to class. The image is bright and professional, following the clean, high-utility minimalism of the TriRide brand. Light-mode aesthetic with soft shadows." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCgLhepwlrJ-hvrHMYQvWCyDDxRwDJQHohTYXgz6ArhJSlYwaM-e_76COwpuiQF45tUruJIVpV4oiwoYC7Pvu5FAvRYZA-FemTrPivCxjr6qYgj9vSlRx651YtuY6GfgQqlpeI2yVLfo3LyeQ4PWFYZylp_PR0Ou2M-fC9wWW6Nvnc7y7v_CFHKeOvQ-D6fRO_FtJ6z_ViwbOxcyF3RHm8g64E5X1kk4KZmg-0FAVWAMZ52mO8_RD3A1PZG2_0Vk9WQ-UjCKCL-lL0">
+</div>
+<div>
+<h3 class="font-section-title text-section-title text-on-surface">Elena S.</h3>
+<div class="flex items-center gap-1 text-on-surface-variant">
+<span class="material-symbols-outlined text-[14px]" style="font-variation-settings: 'FILL' 1;">star</span>
+<span class="font-caption">4.8 • Student</span>
+</div>
+</div>
+</div>
+
+</div>
+<div class="space-y-sm mb-lg">
+<div class="flex items-start gap-sm">
+<span class="material-symbols-outlined text-secondary text-[20px]">trip_origin</span>
+<div class="flex-1 border-b border-outline-variant pb-xs">
+<span class="font-caption text-outline uppercase text-[10px] block">Pickup</span>
+<span class="font-body text-on-surface">Main University Gate</span>
+</div>
+</div>
+<div class="flex items-start gap-sm">
+<span class="material-symbols-outlined text-error text-[20px]">location_on</span>
+<div class="flex-1">
+<span class="font-caption text-outline uppercase text-[10px] block">Destination</span>
+<span class="font-body text-on-surface">Dormitory Block C</span>
+</div>
+</div>
+</div>
+<div class="flex gap-md">
+<button class="flex-1 py-3 px-md border border-outline-variant text-primary font-button rounded-xl hover:bg-surface-container-high transition-colors" onclick="declineBooking()">Decline</button>
+<button class="flex-[2] py-3 px-md bg-primary-container text-on-primary font-button rounded-xl hover:opacity-90 transition-opacity flex items-center justify-center gap-sm" onclick="acceptBooking()">
+                        Accept Ride
+                        <span class="material-symbols-outlined">arrow_forward</span>
+</button>
+</div>
+</div>
+</section>
+<!-- Driver Activity Logs -->
+<section class="space-y-md pb-8">
+<div class="flex items-center justify-between">
+<h2 class="font-section-title text-section-title text-on-surface">Recent Activity</h2>
+<button class="text-primary font-button text-caption">View All</button>
+</div>
+<div class="space-y-sm">
+<!-- Activity Item -->
+<div class="bg-surface-container-lowest p-md rounded-xl border border-outline-variant flex items-center justify-between">
+<div class="flex items-center gap-md">
+<div class="w-10 h-10 rounded-full bg-secondary-container flex items-center justify-center text-on-secondary-container">
+<span class="material-symbols-outlined">check_circle</span>
+</div>
+<div>
+<p class="font-body font-semibold text-on-surface">University Plaza to Terminal</p>
+<p class="font-caption text-on-surface-variant">Completed • 12:45 PM</p>
+</div>
+</div>
+
+</div>
+<!-- Activity Item -->
+<div class="bg-surface-container-lowest p-md rounded-xl border border-outline-variant flex items-center justify-between">
+<div class="flex items-center gap-md">
+<div class="w-10 h-10 rounded-full bg-secondary-container flex items-center justify-center text-on-secondary-container">
+<span class="material-symbols-outlined">check_circle</span>
+</div>
+<div>
+<p class="font-body font-semibold text-on-surface">Market St. to Central Park</p>
+<p class="font-caption text-on-surface-variant">Completed • 12:15 PM</p>
+</div>
+</div>
+
+</div>
+</div>
+</section>
+</main>
+<!-- Bottom Navigation Bar -->
+<nav class="fixed bottom-0 w-full h-[64px] z-50 flex justify-around items-center bg-surface dark:bg-inverse-surface border-t border-outline-variant dark:border-outline px-margin-mobile shadow-lg">
+<a class="flex flex-col items-center justify-center text-primary dark:text-inverse-primary font-bold scale-95 active:scale-90 transition-transform" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">home</span>
+<span class="font-nav-label text-nav-label">Home</span>
+</a>
+
+<a class="flex flex-col items-center justify-center text-on-surface-variant dark:text-surface-variant hover:bg-surface-container-highest transition-colors rounded-lg p-2" href="#">
+<span class="material-symbols-outlined">chat</span>
+<span class="font-nav-label text-nav-label">Messages</span>
+</a>
+<a class="flex flex-col items-center justify-center text-on-surface-variant dark:text-surface-variant hover:bg-surface-container-highest transition-colors rounded-lg p-2" href="#">
+<span class="material-symbols-outlined">person</span>
+<span class="font-nav-label text-nav-label">Profile</span>
+</a>
+</nav>
+<script>
+        let isOnline = true;
+
+        function toggleStatus() {
+            isOnline = !isOnline;
+            const handle = document.getElementById('statusHandle');
+            const toggle = document.getElementById('statusToggle');
+            const text = document.getElementById('statusText');
+            const label = document.getElementById('statusLabel');
+
+            if (isOnline) {
+                handle.style.transform = 'translateX(3rem)';
+                toggle.classList.add('bg-secondary', 'online-glow');
+                toggle.classList.remove('bg-outline-variant');
+                text.innerText = 'On';
+                text.style.left = '0.5rem';
+                text.style.right = 'auto';
+                label.innerText = 'Online';
+                label.classList.add('text-secondary');
+                label.classList.remove('text-outline');
+            } else {
+                handle.style.transform = 'translateX(0.25rem)';
+                toggle.classList.remove('bg-secondary', 'online-glow');
+                toggle.classList.add('bg-outline-variant');
+                text.innerText = 'Off';
+                text.style.left = 'auto';
+                text.style.right = '0.5rem';
+                label.innerText = 'Offline';
+                label.classList.remove('text-secondary');
+                label.classList.add('text-outline');
+            }
+        }
+
+        function declineBooking() {
+            const card = document.getElementById('bookingRequest');
+            card.classList.add('translate-y-full', 'opacity-0');
+            setTimeout(() => {
+                card.style.display = 'none';
+            }, 500);
+        }
+
+        function acceptBooking() {
+            // Placeholder logic for accepting a ride
+            alert('Booking Accepted! Starting navigation to pickup point.');
+            declineBooking();
+        }
+
+        // Initialize status toggle visual state
+        window.onload = () => {
+            const handle = document.getElementById('statusHandle');
+            handle.style.transform = 'translateX(3rem)';
+        };
+    </script>
+
+
+</body></html>

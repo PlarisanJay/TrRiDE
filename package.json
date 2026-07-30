@@ -3,10 +3,20 @@
   "version": "1.0.0",
   "main": "index.js",
   "dependencies": {
-    "expo": "~57.0.4",
-    "expo-status-bar": "~57.0.0",
+    "@expo/vector-icons": "^15.0.2",
+    "@supabase/supabase-js": "^2.49.4",
+    "expo": "~57.0.8",
+    "expo-file-system": "~57.0.1",
+    "expo-font": "~57.0.1",
+    "expo-location": "~57.0.6",
+    "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
-    "react-native": "0.86.0"
+    "react-dom": "19.2.3",
+    "react-native": "0.86.0",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-url-polyfill": "^2.0.0",
+    "react-native-web": "^0.21.2",
+    "react-native-webview": "13.16.1"
   },
   "scripts": {
     "start": "expo start",

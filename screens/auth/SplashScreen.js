@@ -1,7 +1,8 @@
 import React, { useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Animated } from 'react-native';
+import { View, Text, StyleSheet, Animated, Platform, Image } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { COLORS, TYPOGRAPHY, SPACING } from '../../theme';
+import TriRideTextLogo from '../../components/TriRideTextLogo';
 
 export default function SplashScreen({ onFinish }) {
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -13,21 +14,22 @@ export default function SplashScreen({ onFinish }) {
       Animated.sequence([
         Animated.timing(pulseAnim, {
           toValue: 1.05,
-          duration: 1500,
-          useNativeDriver: true,
+          duration: 1200,
+          useNativeDriver: Platform.OS !== 'web',
         }),
         Animated.timing(pulseAnim, {
           toValue: 1,
-          duration: 1500,
-          useNativeDriver: true,
+          duration: 1200,
+          useNativeDriver: Platform.OS !== 'web',
         }),
       ])
     ).start();
 
-    // Progress bar animation to simulate loading
+    // Progress bar animation to simulate loading (faster on web for instant responsiveness)
+    const splashDuration = Platform.OS === 'web' ? 400 : 1800;
     Animated.timing(progressAnim, {
       toValue: 1,
-      duration: 2500,
+      duration: splashDuration,
       useNativeDriver: false, // width animation requires layout reflow
     }).start(() => {
       if (onFinish) {
@@ -51,12 +53,18 @@ export default function SplashScreen({ onFinish }) {
         {/* Logo Container */}
         <Animated.View style={[styles.logoOuter, { transform: [{ scale: pulseAnim }] }]}>
           <View style={styles.logoContainer}>
-            <MaterialIcons name="directions-car" size={72} color="#ffffff" />
+            <Image
+              source={require('../../assets/tricycle-icon.png')}
+              style={styles.logoImage}
+              resizeMode="contain"
+            />
           </View>
         </Animated.View>
 
         {/* Title & Subtitle */}
-        <Text style={styles.title}>TriRide</Text>
+        <View style={{ marginBottom: 4 }}>
+          <TriRideTextLogo size="large" />
+        </View>
         <Text style={styles.subtitle}>Your reliable tricycle connection</Text>
 
         {/* Progress Bar Container */}
@@ -121,6 +129,10 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  logoImage: {
+    width: 86,
+    height: 86,
   },
   title: {
     ...TYPOGRAPHY.headlineLgMobile,

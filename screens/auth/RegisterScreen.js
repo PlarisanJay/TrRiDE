@@ -1,38 +1,79 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, KeyboardAvoidingView } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TextInput,
+  TouchableOpacity,
+  ScrollView,
+  KeyboardAvoidingView,
+} from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { COLORS, TYPOGRAPHY, SPACING, ROUNDED, SHADOWS } from '../../theme';
-import { signUp } from '../../data/auth';
+import { signUp, checkUsernameAvailable } from '../../data/auth';
+import { registerForPushNotifications } from '../../data/pushNotifications';
+import TriRideTextLogo from '../../components/TriRideTextLogo';
+
+// ── Validation helpers ────────────────────────────────────────
+// [DEMO MODE] Relaxed — any username 3+ chars, email is auto-generated
+const PH_MOBILE_REGEX = /^(09\d{9}|\+639\d{9})$/;
+
+const hasUppercase = (str) => /[A-Z]/.test(str);
+const hasLowercase = (str) => /[a-z]/.test(str);
+const hasNumber = (str) => /[0-9]/.test(str);
 
 export default function RegisterScreen({ onLogin }) {
   const [role, setRole] = useState('student');
+  const [username, setUsername] = useState('');
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
+  // [DEMO MODE] Email is auto-generated — no email state needed
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+
+  // Student specific
+  const [studentId, setStudentId] = useState('');
+
+  // Driver specific
+  const [licenseNo, setLicenseNo] = useState('');
+  const [plateNumber, setPlateNumber] = useState('');
+
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
   const validate = () => {
+    // 1. Username — [DEMO MODE] just needs to be 3+ chars
+    const cleanUsername = username.trim();
+    if (!cleanUsername) {
+      setError('Please choose a username.');
+      return false;
+    }
+    if (cleanUsername.length < 3) {
+      setError('Username must be at least 3 characters.');
+      return false;
+    }
+
+    // 2. Full Name
     if (!name.trim()) {
       setError('Please enter your full name.');
       return false;
     }
-    if (!email.trim()) {
-      setError('Please enter your email address.');
+
+    // 3. Email is auto-generated — no validation needed
+
+    // 4. Real Mobile Number
+    const rawPhone = phone.trim().replace(/[\s\-()]/g, '');
+    if (!rawPhone) {
+      setError('Please enter your mobile number.');
       return false;
     }
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email.trim())) {
-      setError('Please enter a valid email address.');
+    if (!PH_MOBILE_REGEX.test(rawPhone)) {
+      setError('Please enter a valid Philippine mobile number (e.g. 09123456789 or +639123456789).');
       return false;
     }
-    if (!phone.trim()) {
-      setError('Please enter your phone number.');
-      return false;
-    }
+
+    // 5. Standard Password
     if (!password) {
       setError('Please enter a password.');
       return false;
@@ -41,6 +82,36 @@ export default function RegisterScreen({ onLogin }) {
       setError('Password must be at least 8 characters long.');
       return false;
     }
+    if (!hasUppercase(password)) {
+      setError('Password must contain at least one uppercase letter (A-Z).');
+      return false;
+    }
+    if (!hasLowercase(password)) {
+      setError('Password must contain at least one lowercase letter (a-z).');
+      return false;
+    }
+    if (!hasNumber(password)) {
+      setError('Password must contain at least one number (0-9).');
+      return false;
+    }
+
+    // 6. Role Specific
+    if (role === 'student') {
+      if (!studentId.trim()) {
+        setError('Please enter your Student ID.');
+        return false;
+      }
+    } else if (role === 'driver') {
+      if (!licenseNo.trim()) {
+        setError("Please enter your Driver's License ID.");
+        return false;
+      }
+      if (!plateNumber.trim()) {
+        setError('Please enter your vehicle Plate Number.');
+        return false;
+      }
+    }
+
     return true;
   };
 
@@ -51,18 +122,42 @@ export default function RegisterScreen({ onLogin }) {
 
     setLoading(true);
     try {
-      await signUp({
-        email: email.trim(),
+      // Check username availability
+      const cleanUsername = username.trim().toLowerCase();
+      const isAvailable = await checkUsernameAvailable(cleanUsername);
+      if (!isAvailable) {
+        setError('This username is already taken. Please choose a different username.');
+        setLoading(false);
+        return;
+      }
+
+      const rawPhone = phone.trim().replace(/[\s\-()]/g, '');
+
+      // [DEMO MODE] Auto-generate email from username — user never enters one
+      const autoEmail = `${cleanUsername}@triride.demo`;
+
+      const result = await signUp({
+        email: autoEmail,
         password,
         full_name: name.trim(),
-        phone: phone.trim(),
+        phone: rawPhone,
         role,
+        username: cleanUsername,
+        student_id: role === 'student' ? studentId.trim() : '',
+        license_no: role === 'driver' ? licenseNo.trim() : '',
+        plate_number: role === 'driver' ? plateNumber.trim() : '',
       });
+
+      // Register push token immediately so approval notification reaches this device
+      if (result?.user?.id) {
+        registerForPushNotifications(result.user.id).catch(() => {});
+      }
+
       setSubmitted(true);
     } catch (e) {
       const msg = e.message || 'Registration failed. Please try again.';
       if (msg.includes('already registered') || msg.includes('already exists')) {
-        setError('An account with this email already exists. Please try a different email or log in.');
+        setError('This username is already registered. Please choose a different username.');
       } else {
         setError(msg);
       }
@@ -79,7 +174,7 @@ export default function RegisterScreen({ onLogin }) {
       <ScrollView contentContainerStyle={styles.scrollContainer} keyboardShouldPersistTaps="handled">
         {/* Top Header */}
         <View style={styles.header}>
-          <Text style={styles.logoText}>TriRide</Text>
+          <TriRideTextLogo size="medium" />
         </View>
 
         <View style={styles.main}>
@@ -91,7 +186,7 @@ export default function RegisterScreen({ onLogin }) {
                 </View>
                 <Text style={styles.pendingTitle}>Registration Submitted</Text>
                 <Text style={styles.pendingSubtitle}>
-                  Your account is pending admin approval. You will be able to log in once an administrator reviews your registration.
+                  Your account is pending admin approval. You will be notified once an administrator verifies and approves your account.
                 </Text>
                 <TouchableOpacity style={styles.btnSubmit} activeOpacity={0.9} onPress={onLogin}>
                   <Text style={styles.btnSubmitText}>Back to Login</Text>
@@ -165,6 +260,22 @@ export default function RegisterScreen({ onLogin }) {
 
               {/* Registration Form */}
               <View style={styles.form}>
+                {/* Username */}
+                <View style={styles.inputWrapper}>
+                  <Text style={styles.inputLabel}>Username</Text>
+                  <View style={styles.inputContainer}>
+                    <MaterialIcons name="alternate-email" size={20} color={COLORS.outline} style={styles.inputIcon} />
+                    <TextInput
+                      style={styles.input}
+                      placeholder="e.g. juandelacruz"
+                      placeholderTextColor="rgba(115, 118, 134, 0.5)"
+                      autoCapitalize="none"
+                      value={username}
+                      onChangeText={(text) => { setUsername(text); setError(''); }}
+                    />
+                  </View>
+                </View>
+
                 {/* Full Name */}
                 <View style={styles.inputWrapper}>
                   <Text style={styles.inputLabel}>Full Name</Text>
@@ -172,7 +283,7 @@ export default function RegisterScreen({ onLogin }) {
                     <MaterialIcons name="person" size={20} color={COLORS.outline} style={styles.inputIcon} />
                     <TextInput
                       style={styles.input}
-                      placeholder="John Doe"
+                      placeholder="Juan Dela Cruz"
                       placeholderTextColor="rgba(115, 118, 134, 0.5)"
                       value={name}
                       onChangeText={(text) => { setName(text); setError(''); }}
@@ -180,31 +291,16 @@ export default function RegisterScreen({ onLogin }) {
                   </View>
                 </View>
 
-                {/* Email Address */}
-                <View style={styles.inputWrapper}>
-                  <Text style={styles.inputLabel}>Email Address</Text>
-                  <View style={styles.inputContainer}>
-                    <MaterialIcons name="mail" size={20} color={COLORS.outline} style={styles.inputIcon} />
-                    <TextInput
-                      style={styles.input}
-                      placeholder="john@university.edu"
-                      placeholderTextColor="rgba(115, 118, 134, 0.5)"
-                      keyboardType="email-address"
-                      autoCapitalize="none"
-                      value={email}
-                      onChangeText={(text) => { setEmail(text); setError(''); }}
-                    />
-                  </View>
-                </View>
+                {/* [DEMO MODE] Email field removed — auto-generated from username */}
 
                 {/* Phone Number */}
                 <View style={styles.inputWrapper}>
-                  <Text style={styles.inputLabel}>Phone Number</Text>
+                  <Text style={styles.inputLabel}>Mobile Number (Philippines)</Text>
                   <View style={styles.inputContainer}>
                     <MaterialIcons name="call" size={20} color={COLORS.outline} style={styles.inputIcon} />
                     <TextInput
                       style={styles.input}
-                      placeholder="+1 (555) 000-0000"
+                      placeholder="0912 345 6789"
                       placeholderTextColor="rgba(115, 118, 134, 0.5)"
                       keyboardType="phone-pad"
                       value={phone}
@@ -213,6 +309,58 @@ export default function RegisterScreen({ onLogin }) {
                   </View>
                 </View>
 
+                {/* Student Specific Field */}
+                {role === 'student' && (
+                  <View style={styles.inputWrapper}>
+                    <Text style={styles.inputLabel}>Student ID</Text>
+                    <View style={styles.inputContainer}>
+                      <MaterialIcons name="badge" size={20} color={COLORS.outline} style={styles.inputIcon} />
+                      <TextInput
+                        style={styles.input}
+                        placeholder="e.g. 2024-00123"
+                        placeholderTextColor="rgba(115, 118, 134, 0.5)"
+                        value={studentId}
+                        onChangeText={(text) => { setStudentId(text); setError(''); }}
+                      />
+                    </View>
+                  </View>
+                )}
+
+                {/* Driver Specific Fields */}
+                {role === 'driver' && (
+                  <>
+                    <View style={styles.inputWrapper}>
+                      <Text style={styles.inputLabel}>Driver's License ID</Text>
+                      <View style={styles.inputContainer}>
+                        <MaterialIcons name="credit-card" size={20} color={COLORS.outline} style={styles.inputIcon} />
+                        <TextInput
+                          style={styles.input}
+                          placeholder="e.g. D01-23-456789"
+                          placeholderTextColor="rgba(115, 118, 134, 0.5)"
+                          autoCapitalize="characters"
+                          value={licenseNo}
+                          onChangeText={(text) => { setLicenseNo(text); setError(''); }}
+                        />
+                      </View>
+                    </View>
+
+                    <View style={styles.inputWrapper}>
+                      <Text style={styles.inputLabel}>Vehicle Plate Number</Text>
+                      <View style={styles.inputContainer}>
+                        <MaterialIcons name="confirmation-number" size={20} color={COLORS.outline} style={styles.inputIcon} />
+                        <TextInput
+                          style={styles.input}
+                          placeholder="e.g. ABC 1234 or 1234-AB"
+                          placeholderTextColor="rgba(115, 118, 134, 0.5)"
+                          autoCapitalize="characters"
+                          value={plateNumber}
+                          onChangeText={(text) => { setPlateNumber(text); setError(''); }}
+                        />
+                      </View>
+                    </View>
+                  </>
+                )}
+
                 {/* Password */}
                 <View style={styles.inputWrapper}>
                   <Text style={styles.inputLabel}>Password</Text>
@@ -220,7 +368,7 @@ export default function RegisterScreen({ onLogin }) {
                     <MaterialIcons name="lock" size={20} color={COLORS.outline} style={styles.inputIcon} />
                     <TextInput
                       style={styles.input}
-                      placeholder="Min. 8 characters"
+                      placeholder="Min. 8 chars (upper, lower, number)"
                       placeholderTextColor="rgba(115, 118, 134, 0.5)"
                       secureTextEntry={!showPassword}
                       autoCapitalize="none"

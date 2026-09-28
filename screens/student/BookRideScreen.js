@@ -1,17 +1,39 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Image, KeyboardAvoidingView, Alert, Modal, ActivityIndicator } from 'react-native';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TextInput,
+  TouchableOpacity,
+  ScrollView,
+  KeyboardAvoidingView,
+  Alert,
+  Modal,
+  ActivityIndicator,
+  Platform,
+  Keyboard,
+} from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
-import { COLORS, TYPOGRAPHY, SPACING, ROUNDED, SHADOWS } from '../../theme';
-import { TOLEDO_CITY } from '../../config/mapConfig';
-import { createTrip, calculateFare } from '../../data/trips';
-import { haversineDistance } from '../../config/mapConfig';
+import { LinearGradient } from 'expo-linear-gradient';
+import {
+  ELEVATION,
+  GRADIENTS,
+  INK,
+  CANVAS,
+  ACCENT,
+  BORDERS,
+} from '../../theme';
+import { TOLEDO_CITY, fetchRoute, haversineDistance, reverseGeocode, formatDistanceText, formatDurationText } from '../../config/mapConfig';
+import { createTrip } from '../../data/trips';
 import MapPreview from '../../components/MapPreview';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 
 export default function BookRideScreen({ userProfile, onConfirmBooking, onNavigate }) {
-  const [pickup, setPickup] = useState('University East Gate');
-  const [pickupCoords, setPickupCoords] = useState(null);
+  const [pickup, setPickup] = useState('Current Location');
+  const [pickupCoords, setPickupCoords] = useState({ latitude: TOLEDO_CITY.latitude, longitude: TOLEDO_CITY.longitude });
+  const [userEditedPickup, setUserEditedPickup] = useState(false);
+  const [isSheetExpanded, setIsSheetExpanded] = useState(false);
   const [destination, setDestination] = useState('');
   const [destinationCoords, setDestinationCoords] = useState(null);
   const [scheduleMode, setScheduleMode] = useState('now'); // 'now' or 'later'
@@ -20,29 +42,166 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
   const [date, setDate] = useState('');
   const [time, setTime] = useState('');
   const [mapRegion, setMapRegion] = useState(TOLEDO_CITY);
+  const [routeCoordinates, setRouteCoordinates] = useState([]);
+  const [routeDuration, setRouteDuration] = useState('30 MIN');
+  const [routeDistance, setRouteDistance] = useState('');
+  const [routeDurationDetail, setRouteDurationDetail] = useState('');
   const [booking, setBooking] = useState(false);
   const [showConfirmation, setShowConfirmation] = useState(false);
+  const [isSearchActive, setIsSearchActive] = useState(false);
+  const [activeField, setActiveField] = useState(null); // 'pickup' | 'destination' | null
 
+  const mapRef = useRef(null);
+
+  // Auto-restore map when keyboard dismisses
   useEffect(() => {
-    (async () => {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status === 'granted') {
-        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-        if (loc?.coords) {
-          const region = {
-            latitude: loc.coords.latitude,
-            longitude: loc.coords.longitude,
-            latitudeDelta: TOLEDO_CITY.latitudeDelta,
-            longitudeDelta: TOLEDO_CITY.longitudeDelta,
-          };
-          setMapRegion(region);
-          setPickupCoords({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
-        }
-      }
-    })();
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+      setIsSearchActive(false);
+      setActiveField(null);
+    });
+    return () => {
+      hideSub.remove();
+    };
   }, []);
 
-  const handleConfirm = async () => {
+  // Auto-detect current location on mount and fill pickup location with high accuracy
+  useEffect(() => {
+    let isMounted = true;
+    const autoDetectCurrentLocation = async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync().catch(() => ({ status: 'denied' }));
+        if (status === 'granted') {
+          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }).catch(() => null) ||
+                      await Location.getLastKnownPositionAsync({}).catch(() => null);
+          if (loc?.coords && isMounted) {
+            const newCoords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
+            setPickupCoords(newCoords);
+            setMapRegion({
+              latitude: loc.coords.latitude,
+              longitude: loc.coords.longitude,
+              latitudeDelta: 0.015,
+              longitudeDelta: 0.015,
+            });
+            mapRef.current?.recenter(loc.coords.latitude, loc.coords.longitude);
+
+            const addr = await reverseGeocode(loc.coords.latitude, loc.coords.longitude);
+            if (isMounted && !userEditedPickup && addr) {
+              setPickup(addr);
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Initial current location error:', e);
+      }
+    };
+
+    autoDetectCurrentLocation();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // Manual GPS location detection when user taps recenter button (high accuracy)
+  const handleRecenter = useCallback(async () => {
+    try {
+      const hasServices = await Location.hasServicesEnabledAsync().catch(() => false);
+      if (!hasServices) {
+        Alert.alert('Location Disabled', 'Please turn on GPS on your device.');
+        return;
+      }
+
+      const { status } = await Location.requestForegroundPermissionsAsync().catch(() => ({ status: 'denied' }));
+      if (status === 'granted') {
+        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }).catch(() => null) ||
+                    await Location.getLastKnownPositionAsync({}).catch(() => null);
+        if (loc?.coords) {
+          const newCoords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
+          setPickupCoords(newCoords);
+          setMapRegion({
+            latitude: loc.coords.latitude,
+            longitude: loc.coords.longitude,
+            latitudeDelta: 0.015,
+            longitudeDelta: 0.015,
+          });
+          mapRef.current?.recenter(loc.coords.latitude, loc.coords.longitude);
+
+          const addr = await reverseGeocode(loc.coords.latitude, loc.coords.longitude);
+          if (addr && !userEditedPickup) {
+            setPickup(addr);
+          }
+          return;
+        }
+      }
+    } catch (e) {
+      console.warn('Recenter location error:', e);
+    }
+
+    if (pickupCoords) {
+      mapRef.current?.recenter(pickupCoords.latitude, pickupCoords.longitude);
+    } else {
+      mapRef.current?.recenter(TOLEDO_CITY.latitude, TOLEDO_CITY.longitude);
+    }
+  }, [pickupCoords, userEditedPickup]);
+
+  // Pinpoint on map: tap map to accurately set pickup or destination coordinates
+  const handleMapPress = useCallback(async (coords) => {
+    if (!coords?.latitude || !coords?.longitude) return;
+    const newCoords = { latitude: coords.latitude, longitude: coords.longitude };
+    if (activeField === 'pickup') {
+      setPickupCoords(newCoords);
+      setUserEditedPickup(true);
+      const addr = await reverseGeocode(coords.latitude, coords.longitude);
+      if (addr) setPickup(addr);
+    } else {
+      setDestinationCoords(newCoords);
+      const addr = await reverseGeocode(coords.latitude, coords.longitude);
+      if (addr) setDestination(addr);
+    }
+  }, [activeField]);
+
+  // Fetch route when both pickup and destination are present
+  useEffect(() => {
+    let isMounted = true;
+    if (pickupCoords?.latitude && destinationCoords?.latitude) {
+      fetchRoute(pickupCoords, destinationCoords).then((res) => {
+        if (isMounted && res) {
+          setRouteCoordinates(res.coordinates || []);
+          setRouteDuration(res.durationText || '30 MIN');
+          setRouteDistance(res.distanceText || '');
+          setRouteDurationDetail(res.durationText || '');
+        }
+      }).catch(() => {
+        if (isMounted) {
+          const distKm = haversineDistance(
+            pickupCoords.latitude,
+            pickupCoords.longitude,
+            destinationCoords.latitude,
+            destinationCoords.longitude
+          );
+          const distMeters = Math.round(distKm * 1000);
+          setRouteDistance(formatDistanceText(distMeters));
+          const mins = Math.max(1, Math.round(distKm * 3));
+          const durStr = formatDurationText(mins);
+          setRouteDuration(durStr);
+          setRouteDurationDetail(durStr);
+        }
+      });
+    } else {
+      setRouteCoordinates([]);
+      setRouteDistance('');
+      setRouteDurationDetail('');
+    }
+    return () => {
+      isMounted = false;
+    };
+  }, [pickupCoords?.latitude, pickupCoords?.longitude, destinationCoords?.latitude, destinationCoords?.longitude]);
+
+  // Fit bounds to show both pickup and destination
+  const handleFitBounds = useCallback(() => {
+    mapRef.current?.fitBounds();
+  }, []);
+
+  const handleConfirm = () => {
     if (!pickupCoords || !destinationCoords) {
       Alert.alert('Missing Info', 'Please select both pickup and destination locations.');
       return;
@@ -54,7 +213,7 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
     setBooking(true);
     try {
       const trip = await createTrip({
-        student_id: userProfile.id,
+        student_id: userProfile?.id,
         pickup_lat: pickupCoords.latitude,
         pickup_lng: pickupCoords.longitude,
         pickup_text: pickup,
@@ -65,7 +224,7 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
         notes,
       });
       setShowConfirmation(false);
-      onConfirmBooking(trip.id);
+      onConfirmBooking?.(trip.id);
     } catch (e) {
       Alert.alert('Error', 'Failed to create trip. Please try again.');
     } finally {
@@ -73,186 +232,404 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
     }
   };
 
-  const estimatedFare = (() => {
-    if (!pickupCoords || !destinationCoords) return null;
-    const dist = haversineDistance(
-      pickupCoords.latitude, pickupCoords.longitude,
-      destinationCoords.latitude, destinationCoords.longitude
-    );
-    return calculateFare(dist);
-  })();
+  const getInitials = () => {
+    if (userProfile?.full_name) {
+      const parts = userProfile.full_name.trim().split(/\s+/);
+      if (parts.length >= 2) {
+        return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+      }
+      return userProfile.full_name.slice(0, 2).toUpperCase();
+    }
+    return 'JP';
+  };
+
+  const mapMarkers = useMemo(() => [
+    ...(pickupCoords
+      ? [{ id: 'pickup', coordinate: pickupCoords, type: 'pickup', color: ACCENT.orange }]
+      : []),
+    ...(destinationCoords
+      ? [{ id: 'destination', coordinate: destinationCoords, type: 'destination', color: ACCENT.blue }]
+      : []),
+  ], [pickupCoords?.latitude, pickupCoords?.longitude, destinationCoords?.latitude, destinationCoords?.longitude]);
 
   return (
     <KeyboardAvoidingView
-      behavior={'padding'}
+      // Matches Login/Register/Messages. 'height' on Android double-shrinks
+      // now that app.json sets softwareKeyboardLayoutMode:"resize".
+      behavior="padding"
       style={styles.container}
     >
-      {/* Top Nav Bar */}
-      <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <TouchableOpacity style={styles.headerIconBtn} onPress={() => onNavigate('Home')}>
-            <MaterialIcons name="arrow-back" size={24} color={COLORS.primary} />
+      {/* Top Map Section - smoothly collapses when searching so keyboard doesn't overlap, or compact when sheet expanded */}
+      <View
+        style={[
+          styles.mapSection,
+          isSearchActive && styles.mapSectionCollapsed,
+          !isSearchActive && isSheetExpanded && styles.mapSectionCompact,
+        ]}
+      >
+        <MapPreview
+          ref={mapRef}
+          region={mapRegion}
+          markers={mapMarkers}
+          routeCoordinates={routeCoordinates}
+          durationText={routeDuration}
+          scrollEnabled={true}
+          onMapPress={handleMapPress}
+        />
+
+        {/* Floating Back Button */}
+        <View style={styles.floatingHeaderArea} pointerEvents="box-none">
+          <TouchableOpacity
+            style={styles.floatingBackBtn}
+            activeOpacity={0.85}
+            onPress={() => onNavigate?.('Home')}
+          >
+            <MaterialIcons name="arrow-back" size={22} color={INK.body} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>Book a Ride</Text>
+
+          {/* Floating Profile Initials Badge */}
+          <TouchableOpacity
+            style={styles.floatingAvatarBtn}
+            activeOpacity={0.85}
+            onPress={() => onNavigate?.('Profile')}
+          >
+            <LinearGradient {...GRADIENTS.brandBright} style={styles.floatingAvatarFill}>
+              <Text style={styles.avatarInitialsText}>{getInitials()}</Text>
+            </LinearGradient>
+          </TouchableOpacity>
         </View>
-        <TouchableOpacity style={styles.avatarBtn} onPress={() => onNavigate('Profile')}>
-          <Image
-            source={{ uri: 'https://lh3.googleusercontent.com/aida-public/AB6AXuDYnaiO3c1N_nqjL0sJ52siMtSKLXlLPftqA26x1R9Xg-ex19tuHq1MU0DTegs_U13cFbBKKUovIr7dTeRtWP6Rn15YZxjJ0bUJ_GKB7airdnDD_5ytyx2s-Fdb0RgIjWWWuuuJI-8BCf7XMzHVPBimEBbtPCuK4bggF4VGvdC3CQvyOahaQbmIvvLgmrpvK0_Ow9LNlJQd1ZUqkFRhjudKIj7AYp9erWu7ErI0hRnW3ps1nAAePlb6d2wIaWQa5IRp54CCWFeDiH8' }}
-            style={styles.avatar}
-          />
-        </TouchableOpacity>
+
+        {/* Floating Map Action Buttons on bottom right of map preview */}
+        <View style={styles.floatingMapActions}>
+          <TouchableOpacity
+            style={styles.mapActionBtn}
+            activeOpacity={0.8}
+            onPress={handleRecenter}
+          >
+            <MaterialIcons name="my-location" size={22} color={INK.body} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.mapActionBtn}
+            activeOpacity={0.8}
+            onPress={handleFitBounds}
+          >
+            <MaterialIcons name="crop-free" size={22} color={INK.body} />
+          </TouchableOpacity>
+        </View>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        {/* Map Preview */}
-        <View style={[styles.mapContainer, SHADOWS.diffusion]}>
-          <MapPreview
-            region={mapRegion}
-            scrollEnabled={false}
-            markers={[
-              ...(pickupCoords
-                ? [{ id: 'pickup', coordinate: pickupCoords, color: COLORS.primary }]
-                : []),
-              ...(destinationCoords
-                ? [{ id: 'destination', coordinate: destinationCoords, color: '#006c49' }]
-                : []),
-            ]}
-          />
-        </View>
-
-        {/* Location Inputs Card */}
-        <View style={[styles.inputsCard, SHADOWS.diffusion]}>
-          <View style={styles.connectingLineContainer}>
-            <View style={styles.dotPrimary} />
-            <View style={styles.line} />
-            <View style={styles.dotSecondary} />
-          </View>
-
-          <View style={styles.inputsWrapper}>
-            <PlacesAutocomplete
-              icon="my-location"
-              iconColor={COLORS.primary}
-              placeholder="Pickup Location"
-              value={pickup}
-              onChangeText={setPickup}
-              onSelect={(loc) => {
-                setPickup(loc.text);
-                setPickupCoords({ latitude: loc.latitude, longitude: loc.longitude });
+      {/* Bottom Sheet Card */}
+      <View
+        style={[
+          styles.sheetContainer,
+          isSearchActive && styles.sheetContainerActive,
+          !isSearchActive && isSheetExpanded && styles.sheetContainerExpanded,
+        ]}
+      >
+        {isSearchActive ? (
+          <View style={styles.searchHeaderBar}>
+            <TouchableOpacity
+              style={styles.searchBackBtn}
+              onPress={() => {
+                Keyboard.dismiss();
+                setIsSearchActive(false);
+                setActiveField(null);
               }}
-            />
-
-            <PlacesAutocomplete
-              icon="location-on"
-              iconColor={COLORS.error}
-              placeholder="Where to?"
-              value={destination}
-              onChangeText={setDestination}
-              onSelect={(loc) => {
-                setDestination(loc.text);
-                setDestinationCoords({ latitude: loc.latitude, longitude: loc.longitude });
+              activeOpacity={0.7}
+            >
+              <MaterialIcons name="arrow-back" size={20} color={INK.body} />
+            </TouchableOpacity>
+            <Text style={styles.searchHeaderTitle}>
+              {activeField === 'pickup' ? 'Select Pick-up Point' : 'Select Destination'}
+            </Text>
+            <TouchableOpacity
+              style={styles.searchDoneBtn}
+              onPress={() => {
+                Keyboard.dismiss();
+                setIsSearchActive(false);
+                setActiveField(null);
               }}
-            />
+              activeOpacity={0.7}
+            >
+              <Text style={styles.searchDoneBtnText}>Done</Text>
+            </TouchableOpacity>
           </View>
-        </View>
-
-        {/* Time Toggle */}
-        <View style={styles.toggleContainer}>
+        ) : (
           <TouchableOpacity
-            style={[styles.toggleBtn, scheduleMode === 'now' && styles.toggleBtnActive]}
+            style={styles.dragHandleTouchArea}
             activeOpacity={0.8}
-            onPress={() => setScheduleMode('now')}
+            onPress={() => setIsSheetExpanded((prev) => !prev)}
           >
-            <Text style={[styles.toggleBtnText, scheduleMode === 'now' && styles.toggleBtnTextActive]}>
-              Ride Now
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.toggleBtn, scheduleMode === 'later' && styles.toggleBtnActive]}
-            activeOpacity={0.8}
-            onPress={() => setScheduleMode('later')}
-          >
-            <Text style={[styles.toggleBtnText, scheduleMode === 'later' && styles.toggleBtnTextActive]}>
-              Schedule Later
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Schedule Picker (conditional) */}
-        {scheduleMode === 'later' && (
-          <View style={styles.schedulePicker}>
-            <View style={styles.scheduleField}>
-              <Text style={styles.scheduleLabel}>Date</Text>
-              <TextInput
-                style={styles.scheduleInput}
-                placeholder="YYYY-MM-DD"
-                placeholderTextColor="rgba(115, 118, 134, 0.5)"
-                value={date}
-                onChangeText={setDate}
-              />
+            <View style={styles.dragHandle} />
+            <View style={styles.sheetTitleRow}>
+              <Text style={styles.sheetTitle}>Fill the following</Text>
+              <View style={styles.expandHintBadge}>
+                <MaterialIcons
+                  name={isSheetExpanded ? 'keyboard-arrow-down' : 'keyboard-arrow-up'}
+                  size={18}
+                  color={INK.muted}
+                />
+              </View>
             </View>
-            <View style={styles.scheduleField}>
-              <Text style={styles.scheduleLabel}>Time</Text>
-              <TextInput
-                style={styles.scheduleInput}
-                placeholder="HH:MM AM/PM"
-                placeholderTextColor="rgba(115, 118, 134, 0.5)"
-                value={time}
-                onChangeText={setTime}
-              />
-            </View>
-          </View>
+          </TouchableOpacity>
         )}
 
-        {/* Passenger Selector */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Passengers</Text>
-          <View style={styles.passengerRow}>
-            {[1, 2, 3, 4].map((num) => (
-              <TouchableOpacity
-                key={num}
+        <ScrollView
+          style={styles.sheetScroll}
+          contentContainerStyle={styles.sheetContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          nestedScrollEnabled
+        >
+          {/* Connected Inputs Container */}
+          <View style={styles.inputsSection}>
+            {/* Left Connected Route Indicator */}
+            <View style={styles.connectedIndicator}>
+              <View style={styles.orangeDot} />
+              <View style={styles.connectorLine} />
+              <View style={styles.greenDot} />
+            </View>
+
+            {/* Input Boxes */}
+            <View style={styles.inputsColumn}>
+              {/* Pickup Input Box */}
+              <View
                 style={[
-                  styles.passengerPill,
-                  passengers === num && styles.passengerPillActive,
+                  styles.inputCard,
+                  activeField === 'pickup' && styles.inputCardActive,
+                  { zIndex: activeField === 'pickup' ? 9999 : 10 },
                 ]}
-                activeOpacity={0.8}
-                onPress={() => setPassengers(num)}
               >
-                <Text style={[styles.passengerText, passengers === num && styles.passengerTextActive]}>
-                  {num}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
+                <View style={styles.inputIconContainer}>
+                  {/* Person Silhouette Icon */}
+                  <MaterialIcons name="person-outline" size={22} color={ACCENT.orange} />
+                </View>
+                <View style={styles.inputDivider} />
+                <View style={styles.autocompleteWrapper}>
+                  <PlacesAutocomplete
+                    borderless
+                    placeholder="Pick up Location"
+                    value={pickup}
+                    onChangeText={(txt) => {
+                      setUserEditedPickup(true);
+                      setPickup(txt);
+                    }}
+                    onFocus={() => {
+                      setIsSearchActive(true);
+                      setActiveField('pickup');
+                    }}
+                    onSelect={(loc) => {
+                      setUserEditedPickup(true);
+                      setPickup(loc.text);
+                      setPickupCoords({ latitude: loc.latitude, longitude: loc.longitude });
+                      Keyboard.dismiss();
+                      setIsSearchActive(false);
+                      setActiveField(null);
+                    }}
+                  />
+                </View>
+              </View>
 
-        {/* Special Notes */}
-        <View style={[styles.section, { marginBottom: 160 }]}>
-          <Text style={styles.sectionTitle}>Special Notes</Text>
-          <TextInput
-            style={styles.notesTextarea}
-            placeholder="e.g. Near the blue gate, carrying a large bag..."
-            placeholderTextColor="rgba(115, 118, 134, 0.5)"
-            multiline
-            numberOfLines={4}
-            value={notes}
-            onChangeText={setNotes}
-          />
-        </View>
-      </ScrollView>
-
-      {/* Bottom Summary Card */}
-      <View style={[styles.bottomCard, SHADOWS.diffusion]}>
-        <View style={styles.bottomCardContent}>
-          <View style={styles.badgeRow}>
-            <View style={styles.badge}>
-              <MaterialIcons name="verified" size={16} color={COLORS.secondary} />
-              <Text style={styles.badgeText}>Safe Ride</Text>
+              {/* Destination Input Box */}
+              <View
+                style={[
+                  styles.inputCard,
+                  { marginTop: 12 },
+                  activeField === 'destination' && styles.inputCardActive,
+                  { zIndex: activeField === 'destination' ? 9999 : 5 },
+                ]}
+              >
+                <View style={styles.inputIconContainer}>
+                  {/* Blue Checkmark Badge */}
+                  <MaterialIcons name="check-circle" size={22} color={ACCENT.blue} />
+                </View>
+                <View style={styles.inputDivider} />
+                <View style={styles.autocompleteWrapper}>
+                  <PlacesAutocomplete
+                    borderless
+                    placeholder="Where to?"
+                    value={destination}
+                    onChangeText={setDestination}
+                    onFocus={() => {
+                      setIsSearchActive(true);
+                      setActiveField('destination');
+                    }}
+                    onSelect={(loc) => {
+                      setDestination(loc.text);
+                      setDestinationCoords({ latitude: loc.latitude, longitude: loc.longitude });
+                      Keyboard.dismiss();
+                      setIsSearchActive(false);
+                      setActiveField(null);
+                    }}
+                  />
+                </View>
+              </View>
             </View>
           </View>
-          <TouchableOpacity style={styles.btnConfirm} activeOpacity={0.9} onPress={handleConfirm}>
-            <Text style={styles.btnConfirmText}>Confirm Booking</Text>
+
+          {/* Ride Now / Schedule Later Segmented Toggle */}
+          <View style={styles.toggleSegmentContainer}>
+            <TouchableOpacity
+              style={[
+                styles.segmentBtn,
+                scheduleMode === 'now' && styles.segmentBtnActive,
+              ]}
+              activeOpacity={0.85}
+              onPress={() => setScheduleMode('now')}
+            >
+              {/* Always mounted, revealed by opacity. Keeps the selected
+                  segment from being a flat primary block without adding a
+                  conditional render around the button. */}
+              <LinearGradient
+                {...GRADIENTS.brand}
+                style={[
+                  styles.segmentFill,
+                  scheduleMode !== 'now' && styles.segmentFillHidden,
+                ]}
+              />
+              <Text
+                style={[
+                  styles.segmentBtnText,
+                  scheduleMode === 'now' && styles.segmentBtnTextActive,
+                ]}
+              >
+                Ride Now
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.segmentBtn,
+                scheduleMode === 'later' && styles.segmentBtnActive,
+              ]}
+              activeOpacity={0.85}
+              onPress={() => setScheduleMode('later')}
+            >
+              <LinearGradient
+                {...GRADIENTS.brand}
+                style={[
+                  styles.segmentFill,
+                  scheduleMode !== 'later' && styles.segmentFillHidden,
+                ]}
+              />
+              <Text
+                style={[
+                  styles.segmentBtnText,
+                  scheduleMode === 'later' && styles.segmentBtnTextActive,
+                ]}
+              >
+                Schedule Later
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Schedule Picker if "later" */}
+          {scheduleMode === 'later' && (
+            <View style={styles.scheduleRow}>
+              <View style={styles.scheduleCol}>
+                <Text style={styles.scheduleLabel}>Date</Text>
+                <TextInput
+                  style={styles.scheduleInputField}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor={INK.subtle}
+                  value={date}
+                  onChangeText={setDate}
+                />
+              </View>
+              <View style={styles.scheduleCol}>
+                <Text style={styles.scheduleLabel}>Time</Text>
+                <TextInput
+                  style={styles.scheduleInputField}
+                  placeholder="HH:MM AM/PM"
+                  placeholderTextColor={INK.subtle}
+                  value={time}
+                  onChangeText={setTime}
+                />
+              </View>
+            </View>
+          )}
+
+          {/* Passengers Section (1 to 7 buttons) */}
+          <View style={styles.sectionBlock}>
+            <Text style={styles.sectionHeading}>Passengers</Text>
+            <View style={styles.passengersRow}>
+              {[1, 2, 3, 4, 5, 6, 7].map((num) => (
+                <TouchableOpacity
+                  key={num}
+                  style={[
+                    styles.passengerBox,
+                    passengers === num && styles.passengerBoxActive,
+                  ]}
+                  activeOpacity={0.75}
+                  onPress={() => setPassengers(num)}
+                >
+                  <Text
+                    style={[
+                      styles.passengerBoxText,
+                      passengers === num && styles.passengerBoxTextActive,
+                    ]}
+                  >
+                    {num}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+
+          {/* Special Notes Section */}
+          <View style={styles.sectionBlock}>
+            <Text style={styles.sectionHeading}>Special Notes</Text>
+            <TextInput
+              style={styles.notesBox}
+              placeholder="e.g. Kuha ko amoa"
+              placeholderTextColor={INK.subtle}
+              multiline
+              numberOfLines={3}
+              value={notes}
+              onChangeText={setNotes}
+              onFocus={() => {
+                setActiveField('notes');
+              }}
+            />
+          </View>
+
+          {/* Trip Route Distance & Duration Info */}
+          {(routeDistance || routeDurationDetail) ? (
+            <View style={styles.routeSummaryCard}>
+              <View style={styles.routeSummaryItem}>
+                <View style={[styles.routeSummaryIconBg, { backgroundColor: ACCENT.blueWash }]}>
+                  <MaterialIcons name="straighten" size={18} color={ACCENT.blue} />
+                </View>
+                <View style={styles.routeSummaryTextGroup}>
+                  <Text style={styles.routeSummaryLabel}>DISTANCE</Text>
+                  <Text style={styles.routeSummaryValue}>{routeDistance || 'Calculating...'}</Text>
+                </View>
+              </View>
+              <View style={styles.routeSummaryDivider} />
+              <View style={styles.routeSummaryItem}>
+                <View style={[styles.routeSummaryIconBg, { backgroundColor: ACCENT.orangeWash }]}>
+                  <MaterialIcons name="schedule" size={18} color={ACCENT.orangeDeep} />
+                </View>
+                <View style={styles.routeSummaryTextGroup}>
+                  <Text style={styles.routeSummaryLabel}>TRAVEL TIME</Text>
+                  <Text style={styles.routeSummaryValue}>{routeDurationDetail || 'Calculating...'}</Text>
+                </View>
+              </View>
+            </View>
+          ) : null}
+
+          {/* Confirm Booking Full Width Button */}
+          <TouchableOpacity
+            style={styles.btnConfirmBooking}
+            activeOpacity={0.88}
+            onPress={handleConfirm}
+          >
+            <LinearGradient {...GRADIENTS.brand} style={styles.btnConfirmBookingFill}>
+              <Text style={styles.btnConfirmBookingText}>Confirm Booking</Text>
+            </LinearGradient>
           </TouchableOpacity>
-        </View>
+        </ScrollView>
       </View>
 
       {/* Confirmation Modal */}
@@ -267,7 +644,7 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Confirm Your Ride</Text>
               <TouchableOpacity onPress={() => setShowConfirmation(false)}>
-                <MaterialIcons name="close" size={24} color={COLORS.onSurfaceVariant} />
+                <MaterialIcons name="close" size={24} color={INK.muted} />
               </TouchableOpacity>
             </View>
 
@@ -275,8 +652,8 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
 
             <View style={styles.modalDetails}>
               <View style={styles.modalDetailRow}>
-                <View style={[styles.modalIconBg, { backgroundColor: COLORS.primaryFixed }]}>
-                  <MaterialIcons name="trip-origin" size={18} color={COLORS.primary} />
+                <View style={[styles.modalIconBg, { backgroundColor: ACCENT.orangeSoft }]}>
+                  <MaterialIcons name="trip-origin" size={18} color={ACCENT.orangeDeep} />
                 </View>
                 <View style={styles.modalDetailText}>
                   <Text style={styles.modalDetailLabel}>Pickup</Text>
@@ -285,8 +662,8 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
               </View>
 
               <View style={styles.modalDetailRow}>
-                <View style={[styles.modalIconBg, { backgroundColor: COLORS.errorContainer }]}>
-                  <MaterialIcons name="location-on" size={18} color={COLORS.error} />
+                <View style={[styles.modalIconBg, { backgroundColor: ACCENT.blueSoft }]}>
+                  <MaterialIcons name="location-on" size={18} color={ACCENT.blue} />
                 </View>
                 <View style={styles.modalDetailText}>
                   <Text style={styles.modalDetailLabel}>Destination</Text>
@@ -295,8 +672,8 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
               </View>
 
               <View style={styles.modalDetailRow}>
-                <View style={[styles.modalIconBg, { backgroundColor: COLORS.secondaryContainer }]}>
-                  <MaterialIcons name="people" size={18} color={COLORS.secondary} />
+                <View style={[styles.modalIconBg, { backgroundColor: ACCENT.skySoft }]}>
+                  <MaterialIcons name="people" size={18} color={ACCENT.sky} />
                 </View>
                 <View style={styles.modalDetailText}>
                   <Text style={styles.modalDetailLabel}>Passengers</Text>
@@ -306,8 +683,8 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
 
               {scheduleMode === 'later' && (date || time) && (
                 <View style={styles.modalDetailRow}>
-                  <View style={[styles.modalIconBg, { backgroundColor: COLORS.surfaceContainerHigh }]}>
-                    <MaterialIcons name="schedule" size={18} color={COLORS.tertiary} />
+                  <View style={[styles.modalIconBg, { backgroundColor: CANVAS.sunken }]}>
+                    <MaterialIcons name="schedule" size={18} color={INK.slate} />
                   </View>
                   <View style={styles.modalDetailText}>
                     <Text style={styles.modalDetailLabel}>Schedule</Text>
@@ -318,8 +695,8 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
 
               {notes ? (
                 <View style={styles.modalDetailRow}>
-                  <View style={[styles.modalIconBg, { backgroundColor: COLORS.surfaceContainerHigh }]}>
-                    <MaterialIcons name="note" size={18} color={COLORS.onSurfaceVariant} />
+                  <View style={[styles.modalIconBg, { backgroundColor: CANVAS.sunken }]}>
+                    <MaterialIcons name="note" size={18} color={INK.muted} />
                   </View>
                   <View style={styles.modalDetailText}>
                     <Text style={styles.modalDetailLabel}>Notes</Text>
@@ -328,12 +705,30 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
                 </View>
               ) : null}
 
-              {estimatedFare && (
-                <View style={styles.modalFareRow}>
-                  <Text style={styles.modalFareLabel}>Estimated Fare</Text>
-                  <Text style={styles.modalFareValue}>₱{estimatedFare}</Text>
+              {/* Trip Distance & Estimated Travel Time Badge */}
+              {(routeDistance || routeDurationDetail) ? (
+                <View style={styles.modalRouteSummaryRow}>
+                  <View style={styles.modalRouteItem}>
+                    <View style={[styles.modalRouteIconBg, { backgroundColor: ACCENT.blueWash }]}>
+                      <MaterialIcons name="straighten" size={16} color={ACCENT.blue} />
+                    </View>
+                    <View style={styles.modalRouteTextWrap}>
+                      <Text style={styles.modalRouteLabel}>Distance</Text>
+                      <Text style={styles.modalRouteValue}>{routeDistance || '--'}</Text>
+                    </View>
+                  </View>
+                  <View style={styles.modalRouteDivider} />
+                  <View style={styles.modalRouteItem}>
+                    <View style={[styles.modalRouteIconBg, { backgroundColor: ACCENT.orangeWash }]}>
+                      <MaterialIcons name="schedule" size={16} color={ACCENT.orangeDeep} />
+                    </View>
+                    <View style={styles.modalRouteTextWrap}>
+                      <Text style={styles.modalRouteLabel}>Travel Time</Text>
+                      <Text style={styles.modalRouteValue}>{routeDurationDetail || '--'}</Text>
+                    </View>
+                  </View>
                 </View>
-              )}
+              ) : null}
             </View>
 
             <View style={styles.modalActions}>
@@ -345,16 +740,18 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
                 <Text style={styles.modalBtnEditText}>Edit</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.modalBtnConfirm, booking && { opacity: 0.7 }]}
-                activeOpacity={0.8}
+                style={[styles.modalBtnFinalConfirm, booking && { opacity: 0.7 }]}
+                activeOpacity={0.85}
                 onPress={handleFinalConfirm}
                 disabled={booking}
               >
-                {booking ? (
-                  <ActivityIndicator size="small" color="#ffffff" />
-                ) : (
-                  <Text style={styles.modalBtnConfirmText}>Confirm Booking</Text>
-                )}
+                <LinearGradient {...GRADIENTS.brand} style={styles.modalBtnFinalConfirmFill}>
+                  {booking ? (
+                    <ActivityIndicator size="small" color={CANVAS.raised} />
+                  ) : (
+                    <Text style={styles.modalBtnFinalConfirmText}>Confirm Booking</Text>
+                  )}
+                </LinearGradient>
               </TouchableOpacity>
             </View>
           </View>
@@ -367,270 +764,400 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: CANVAS.raised,
   },
-  header: {
-    flexDirection: 'row',
-    height: 60,
-    paddingTop: 8,
-    backgroundColor: COLORS.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.outlineVariant,
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: SPACING.marginMobile,
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 10,
+  mapSection: {
+    flex: 0.75,
+    minHeight: 200,
+    position: 'relative',
+    backgroundColor: CANVAS.sunken,
   },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: SPACING.sm,
-  },
-  headerIconBtn: {
-    padding: SPACING.xs,
-  },
-  headerTitle: {
-    ...TYPOGRAPHY.sectionTitle,
-    color: COLORS.primary,
-    fontWeight: '800',
-  },
-  avatarBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+  mapSectionCollapsed: {
+    flex: 0,
+    height: 0,
+    minHeight: 0,
     overflow: 'hidden',
   },
-  avatar: {
-    width: '100%',
-    height: '100%',
+  mapSectionCompact: {
+    flex: 0.45,
+    minHeight: 160,
   },
-  scrollContent: {
-    paddingTop: 76,
-    paddingHorizontal: SPACING.marginMobile,
+  floatingHeaderArea: {
+    position: 'absolute',
+    top: Platform.OS === 'android' ? 14 : 10,
+    left: 16,
+    right: 16,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    zIndex: 50,
+  },
+  // Floating map controls sit on imagery, so they need enough lift to
+  // separate from it. ELEVATION.lg keeps the shadow soft rather than the
+  // harder black drop shadow these had.
+  floatingBackBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: CANVAS.raised,
+    justifyContent: 'center',
+    alignItems: 'center',
+    ...ELEVATION.lg,
+  },
+  // The fill is a GRADIENTS.brandBright LinearGradient in the JSX.
+  floatingAvatarBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    // borderRadius does not clip children in React Native; without this the
+    // gradient fill renders as a square.
+    overflow: 'hidden',
+    justifyContent: 'center',
+    alignItems: 'center',
+    ...ELEVATION.glow,
+  },
+  floatingAvatarFill: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  avatarInitialsText: {
+    color: CANVAS.raised,
+    fontSize: 18,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  floatingMapActions: {
+    position: 'absolute',
+    right: 16,
+    bottom: 24,
+    gap: 10,
+    zIndex: 50,
+  },
+  mapActionBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    backgroundColor: CANVAS.raised,
+    justifyContent: 'center',
+    alignItems: 'center',
+    ...ELEVATION.lg,
+    // The 1px rgba(0,0,0,0.05) ring was doing the job of a shadow; ELEVATION
+    // now supplies that separation, so only a whisper of a hairline is left.
+    ...BORDERS.hair,
+  },
+  // The sheet overlaps the map, so it needs a pronounced lift. This is the
+  // one surface in the app where a strong shadow is load-bearing.
+  sheetContainer: {
+    flex: 1.25,
+    backgroundColor: CANVAS.raised,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    marginTop: -20,
+    ...ELEVATION.lg,
+    zIndex: 20,
+  },
+  sheetContainerExpanded: {
+    flex: 1.55,
+    marginTop: -20,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+  },
+  sheetContainerActive: {
+    flex: 1,
+    marginTop: 0,
+    borderTopLeftRadius: 0,
+    borderTopRightRadius: 0,
+    paddingTop: Platform.OS === 'android' ? 24 : 12,
+  },
+  searchHeaderBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    paddingBottom: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(15, 23, 42, 0.06)',
+    backgroundColor: CANVAS.raised,
+    zIndex: 100,
+  },
+  searchBackBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: CANVAS.sunken,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  searchHeaderTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: INK.strong,
+  },
+  searchDoneBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  searchDoneBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: ACCENT.blue,
+  },
+  dragHandleTouchArea: {
+    alignItems: 'center',
+    paddingTop: 8,
+    paddingBottom: 2,
+    paddingHorizontal: 20,
+    width: '100%',
+  },
+  dragHandle: {
+    width: 54,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: INK.faint,
+    alignSelf: 'center',
+    marginBottom: 8,
+  },
+  sheetTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+    marginBottom: 8,
+  },
+  sheetTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: INK.strong,
+    marginBottom: 0,
+  },
+  expandHintBadge: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: CANVAS.sunken,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  sheetScroll: {
+    flex: 1,
+  },
+  sheetContent: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
     paddingBottom: 40,
   },
-  mapContainer: {
-    height: 160,
-    borderRadius: 16,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: COLORS.outlineVariant,
-    marginBottom: SPACING.lg,
-    position: 'relative',
-  },
-  inputsCard: {
-    backgroundColor: COLORS.surfaceContainerLowest,
-    borderWidth: 1,
-    borderColor: COLORS.outlineVariant,
-    borderRadius: ROUNDED.md,
-    padding: SPACING.md,
+  inputsSection: {
     flexDirection: 'row',
-    gap: SPACING.sm,
-    marginBottom: SPACING.md,
+    alignItems: 'flex-start',
+    marginBottom: 14,
+    zIndex: 100,
   },
-  connectingLineContainer: {
+  connectedIndicator: {
+    width: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    width: 16,
-    paddingVertical: 10,
+    marginRight: 10,
+    paddingVertical: 14,
   },
-  dotPrimary: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: COLORS.primary,
+  orangeDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
+    backgroundColor: ACCENT.orange,
   },
-  line: {
-    width: 1,
-    flex: 1,
-    backgroundColor: COLORS.outlineVariant,
+  connectorLine: {
+    width: 1.5,
+    height: 42,
+    backgroundColor: INK.faint,
     marginVertical: 4,
   },
-  dotSecondary: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    borderWidth: 2,
-    borderColor: COLORS.secondary,
-    backgroundColor: '#ffffff',
+  greenDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
+    backgroundColor: ACCENT.greenBright,
   },
-  inputsWrapper: {
+  inputsColumn: {
     flex: 1,
-    gap: SPACING.md,
+    zIndex: 100,
   },
-  toggleContainer: {
+  inputCard: {
     flexDirection: 'row',
-    backgroundColor: COLORS.surfaceContainer,
-    borderRadius: ROUNDED.md,
-    borderWidth: 1,
-    borderColor: COLORS.outlineVariant,
-    padding: 4,
-    marginBottom: SPACING.md,
+    alignItems: 'center',
+    ...BORDERS.strong,
+    borderRadius: 12,
+    backgroundColor: CANVAS.raised,
+    height: 48,
   },
-  toggleBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: ROUNDED.default,
+  // Focus ring. Kept as a real 1.5px stroke because this is the one place a
+  // border is doing accessibility work (visible focus target), not decoration.
+  inputCardActive: {
+    borderColor: ACCENT.blue,
+    borderWidth: 1.5,
+    ...ELEVATION.sm,
+  },
+  inputIconContainer: {
+    width: 44,
+    height: 48,
+    justifyContent: 'center',
     alignItems: 'center',
   },
-  toggleBtnActive: {
-    backgroundColor: '#ffffff',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
-    shadowRadius: 2,
-    elevation: 1,
+  inputDivider: {
+    width: StyleSheet.hairlineWidth,
+    height: 28,
+    backgroundColor: 'rgba(15, 23, 42, 0.08)',
   },
-  toggleBtnText: {
-    ...TYPOGRAPHY.button,
-    color: COLORS.onSurfaceVariant,
-  },
-  toggleBtnTextActive: {
-    color: COLORS.primary,
-  },
-  schedulePicker: {
-    flexDirection: 'row',
-    gap: SPACING.md,
-    marginBottom: SPACING.md,
-  },
-  scheduleField: {
+  autocompleteWrapper: {
     flex: 1,
-    gap: 4,
+    paddingHorizontal: 12,
   },
-  scheduleLabel: {
-    ...TYPOGRAPHY.caption,
-    color: COLORS.outline,
-    marginLeft: 4,
+  toggleSegmentContainer: {
+    flexDirection: 'row',
+    backgroundColor: CANVAS.sunken,
+    borderRadius: 10,
+    ...BORDERS.soft,
+    padding: 3,
+    marginBottom: 14,
   },
-  scheduleInput: {
-    borderWidth: 1,
-    borderColor: COLORS.outlineVariant,
-    borderRadius: ROUNDED.md,
-    backgroundColor: '#ffffff',
-    height: 48,
-    paddingHorizontal: SPACING.md,
-    ...TYPOGRAPHY.body,
-    color: COLORS.onSurface,
+  segmentBtn: {
+    flex: 1,
+    paddingVertical: 9,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
   },
-  section: {
-    marginTop: SPACING.md,
-    gap: SPACING.sm,
+  segmentFill: {
+    ...StyleSheet.absoluteFillObject,
   },
-  sectionTitle: {
-    ...TYPOGRAPHY.sectionTitle,
-    color: COLORS.onSurface,
+  segmentFillHidden: {
+    opacity: 0,
+  },
+  // Selected segment.
+  segmentBtnActive: {
+    ...ELEVATION.xs,
+  },
+  segmentBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: INK.deep,
+  },
+  segmentBtnTextActive: {
+    color: CANVAS.raised,
     fontWeight: '700',
   },
-  passengerRow: {
+  scheduleRow: {
     flexDirection: 'row',
-    gap: SPACING.sm,
+    gap: 12,
+    marginBottom: 14,
   },
-  passengerPill: {
+  scheduleCol: {
     flex: 1,
-    height: 48,
-    borderWidth: 1,
-    borderColor: COLORS.outlineVariant,
-    borderRadius: ROUNDED.md,
-    backgroundColor: '#ffffff',
-    justifyContent: 'center',
-    alignItems: 'center',
   },
-  passengerPillActive: {
-    borderColor: COLORS.primaryContainer,
-    borderWidth: 1,
-    backgroundColor: '#ffffff',
-    shadowColor: COLORS.primary,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 2,
+  scheduleLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: INK.muted,
+    marginBottom: 4,
+    marginLeft: 2,
   },
-  passengerText: {
-    ...TYPOGRAPHY.button,
-    color: COLORS.onSurfaceVariant,
+  // Sunken fields with a hairline rather than outlined boxes.
+  scheduleInputField: {
+    ...BORDERS.soft,
+    backgroundColor: CANVAS.sunken,
+    borderRadius: 10,
+    height: 44,
+    paddingHorizontal: 12,
+    fontSize: 14,
+    color: INK.strong,
   },
-  passengerTextActive: {
-    color: COLORS.primary,
-    fontWeight: '800',
+  sectionBlock: {
+    marginBottom: 14,
   },
-  notesTextarea: {
-    borderWidth: 1,
-    borderColor: COLORS.outlineVariant,
-    borderRadius: ROUNDED.md,
-    backgroundColor: '#ffffff',
-    padding: SPACING.md,
-    ...TYPOGRAPHY.body,
-    color: COLORS.onSurface,
-    textAlignVertical: 'top',
-    height: 96,
+  sectionHeading: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: INK.strong,
+    marginBottom: 10,
   },
-  bottomCard: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: '#ffffff',
-    borderTopWidth: 1,
-    borderTopColor: COLORS.outlineVariant,
-    paddingHorizontal: SPACING.marginMobile,
-    paddingTop: SPACING.md,
-    paddingBottom: 35,
-  },
-  bottomCardContent: {
-    maxWidth: 600,
-    alignSelf: 'center',
-    width: '100%',
-    gap: SPACING.md,
-  },
-  badgeRow: {
+  passengersRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    gap: 6,
   },
-  badge: {
-    flexDirection: 'row',
-    backgroundColor: 'rgba(0,108,73,0.1)',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 20,
-    alignItems: 'center',
-    gap: 4,
-  },
-  badgeText: {
-    ...TYPOGRAPHY.caption,
-    color: COLORS.secondary,
-    fontWeight: '600',
-  },
-  btnConfirm: {
-    height: 56,
-    backgroundColor: COLORS.primaryContainer,
-    borderRadius: ROUNDED.md,
+  passengerBox: {
+    flex: 1,
+    height: 42,
+    ...BORDERS.strong,
+    borderRadius: 8,
+    backgroundColor: CANVAS.raised,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: COLORS.primary,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 6,
-    elevation: 4,
   },
-  btnConfirmText: {
-    ...TYPOGRAPHY.button,
-    color: '#ffffff',
+  passengerBoxActive: {
+    borderColor: ACCENT.blue,
+    borderWidth: 1.5,
+    backgroundColor: ACCENT.blueWash,
+  },
+  passengerBoxText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: INK.body,
+  },
+  passengerBoxTextActive: {
+    color: ACCENT.blueDeep,
+    fontWeight: '700',
+  },
+  notesBox: {
+    ...BORDERS.soft,
+    backgroundColor: CANVAS.sunken,
+    borderRadius: 10,
+    padding: 12,
+    fontSize: 14,
+    color: INK.strong,
+    textAlignVertical: 'top',
+    height: 82,
+  },
+  // The main CTA. The touchable is full width by default (its parent is a
+  // column with default alignItems: stretch); ELEVATION.glow gives it a tinted
+  // lift instead of the old hard blue drop shadow.
+  btnConfirmBooking: {
+    height: 50,
+    borderRadius: 10,
+    // borderRadius does not clip children in React Native; without this the
+    // gradient fill renders with square corners.
+    overflow: 'hidden',
+    marginTop: 8,
+    ...ELEVATION.glow,
+  },
+  // alignSelf: 'stretch' is required because the parent's alignItems is not
+  // stretch on the cross axis here; without it the fill only covers the label.
+  btnConfirmBookingFill: {
+    flex: 1,
+    alignSelf: 'stretch',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  btnConfirmBookingText: {
+    color: CANVAS.raised,
+    fontSize: 16,
+    fontWeight: '700',
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: 'rgba(10, 15, 30, 0.45)',
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: SPACING.marginMobile,
+    paddingHorizontal: 20,
   },
   modalContent: {
-    backgroundColor: '#ffffff',
-    borderRadius: ROUNDED.lg,
+    backgroundColor: CANVAS.raised,
+    ...ELEVATION.lg,
+    borderRadius: 16,
     width: '100%',
     maxWidth: 400,
     overflow: 'hidden',
@@ -639,28 +1166,28 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: SPACING.md,
-    paddingTop: SPACING.md,
+    paddingHorizontal: 16,
+    paddingTop: 16,
   },
   modalTitle: {
-    ...TYPOGRAPHY.sectionTitle,
-    color: COLORS.onSurface,
+    fontSize: 18,
     fontWeight: '700',
+    color: INK.strong,
   },
   modalDivider: {
     height: 1,
-    backgroundColor: COLORS.outlineVariant,
-    marginVertical: SPACING.sm,
-    marginHorizontal: SPACING.md,
+    backgroundColor: CANVAS.line,
+    marginVertical: 12,
+    marginHorizontal: 16,
   },
   modalDetails: {
-    paddingHorizontal: SPACING.md,
-    gap: SPACING.md,
+    paddingHorizontal: 16,
+    gap: 12,
   },
   modalDetailRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: SPACING.md,
+    gap: 12,
   },
   modalIconBg: {
     width: 36,
@@ -673,69 +1200,137 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   modalDetailLabel: {
-    ...TYPOGRAPHY.caption,
-    color: COLORS.onSurfaceVariant,
+    fontSize: 12,
+    color: INK.muted,
   },
   modalDetailValue: {
-    ...TYPOGRAPHY.body,
-    color: COLORS.onSurface,
-    fontWeight: '500',
+    fontSize: 14,
+    color: INK.strong,
+    fontWeight: '600',
     marginTop: 2,
   },
-  modalFareRow: {
+  routeSummaryCard: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: COLORS.surfaceContainerLow,
-    borderRadius: ROUNDED.md,
-    padding: SPACING.md,
-    marginTop: SPACING.sm,
+    backgroundColor: CANVAS.base,
+    ...BORDERS.soft,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    marginVertical: 14,
   },
-  modalFareLabel: {
-    ...TYPOGRAPHY.body,
-    color: COLORS.onSurfaceVariant,
-    fontWeight: '500',
+  routeSummaryItem: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
-  modalFareValue: {
-    ...TYPOGRAPHY.sectionTitle,
-    color: COLORS.primary,
+  routeSummaryIconBg: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  routeSummaryTextGroup: {
+    flex: 1,
+  },
+  routeSummaryLabel: {
+    fontSize: 10,
     fontWeight: '700',
+    color: INK.muted,
+    letterSpacing: 0.5,
+  },
+  routeSummaryValue: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: INK.strong,
+    marginTop: 1,
+  },
+  routeSummaryDivider: {
+    width: 1,
+    height: 28,
+    backgroundColor: INK.faint,
+    marginHorizontal: 10,
+  },
+  modalRouteSummaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: ACCENT.greenWash,
+    borderRadius: 10,
+    padding: 12,
+    marginTop: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(22, 163, 74, 0.2)',
+  },
+  modalRouteItem: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  modalRouteIconBg: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalRouteTextWrap: {
+    marginLeft: 8,
+    flex: 1,
+  },
+  modalRouteLabel: {
+    fontSize: 11,
+    color: INK.muted,
+    fontWeight: '600',
+  },
+  modalRouteValue: {
+    fontSize: 14,
+    color: INK.strong,
+    fontWeight: '700',
+    marginTop: 1,
+  },
+  modalRouteDivider: {
+    width: 1,
+    height: 26,
+    backgroundColor: ACCENT.greenMid,
+    marginHorizontal: 10,
   },
   modalActions: {
     flexDirection: 'row',
-    paddingHorizontal: SPACING.md,
-    paddingVertical: SPACING.md,
-    gap: SPACING.sm,
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    gap: 10,
   },
   modalBtnEdit: {
     flex: 1,
-    height: 50,
-    borderRadius: ROUNDED.md,
-    borderWidth: 1,
-    borderColor: COLORS.outlineVariant,
+    height: 46,
+    borderRadius: 10,
+    ...BORDERS.strong,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#ffffff',
+    backgroundColor: CANVAS.raised,
   },
   modalBtnEditText: {
-    ...TYPOGRAPHY.button,
-    color: COLORS.onSurfaceVariant,
+    fontSize: 15,
+    fontWeight: '600',
+    color: INK.slate,
   },
-  modalBtnConfirm: {
-    flex: 1.5,
-    height: 50,
-    borderRadius: ROUNDED.md,
-    backgroundColor: COLORS.primaryContainer,
+  // Gradient fill lives in the JSX.
+  modalBtnFinalConfirm: {
+    flex: 1.6,
+    height: 46,
+    borderRadius: 10,
+    overflow: 'hidden',
+  },
+  modalBtnFinalConfirmFill: {
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: COLORS.primary,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 6,
-    elevation: 4,
   },
-  modalBtnConfirmText: {
-    ...TYPOGRAPHY.button,
-    color: '#ffffff',
+  modalBtnFinalConfirmText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: CANVAS.raised,
   },
 });

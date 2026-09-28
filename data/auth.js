@@ -1,45 +1,142 @@
+import { Platform } from 'react-native';
 import { supabase } from '../config/supabase';
 
+
+// ── Auth: Check Username Available ────────────────────────────
+export const checkUsernameAvailable = async (username) => {
+  if (!username) return true;
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id')
+      .ilike('username', username.trim())
+      .maybeSingle();
+
+    if (error && error.code !== 'PGRST116') {
+      return true;
+    }
+    return !data;
+  } catch (e) {
+    return true;
+  }
+};
+
 // ── Auth: Sign Up ──────────────────────────────────────────────
-export const signUp = async ({ email, password, full_name, phone, role }) => {
+export const signUp = async ({
+  email,
+  password,
+  full_name,
+  phone,
+  role,
+  username,
+  student_id,
+  license_no,
+  plate_number,
+}) => {
+  const cleanUsername = (username || '').trim().toLowerCase();
   const { data, error } = await supabase.auth.signUp({
     email,
     password,
     options: {
-      data: { full_name, phone, role },
+      data: {
+        full_name,
+        phone,
+        role,
+        username: cleanUsername,
+        student_id: student_id || '',
+        license_no: license_no || '',
+        plate_number: plate_number || '',
+      },
     },
   });
 
   if (error) throw error;
+
+  // Immediate profile sync to ensure custom fields are saved even if database trigger is not yet updated
+  if (data?.user?.id) {
+    try {
+      await supabase
+        .from('profiles')
+        .update({
+          username: cleanUsername || null,
+          student_id: student_id || null,
+          license_no: license_no || null,
+          plate_number: plate_number || null,
+          phone: phone || null,
+          full_name: full_name || null,
+        })
+        .eq('id', data.user.id);
+    } catch (e) {
+      // Handled by trigger if available
+    }
+  }
+
   return data;
 };
 
-// ── Auth: Sign In ──────────────────────────────────────────────
-export const signIn = async ({ email, password }) => {
-  const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-    email,
-    password,
-  });
+const withTimeout = (promise, timeoutMs = 8000, errorMsg = 'Request timed out') => {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(errorMsg)), timeoutMs)
+    ),
+  ]);
+};
+
+// ── Auth: Sign In (Allows Username OR Gmail) ───────────────────
+export const signIn = async ({ email, identifier, password }) => {
+  const loginInput = (identifier || email || '').trim();
+  let resolvedEmail = loginInput;
+
+  // If user entered a username (does not contain '@')
+  if (!loginInput.includes('@')) {
+    const { data: userProfile, error: profileErr } = await withTimeout(
+      supabase
+        .from('profiles')
+        .select('email')
+        .ilike('username', loginInput)
+        .maybeSingle(),
+      5000,
+      'Username lookup timed out'
+    ).catch(() => ({ data: null, error: null }));
+
+    if (profileErr) {
+      console.warn('Username lookup error:', profileErr.message);
+    }
+
+    if (!userProfile?.email) {
+      throw new Error(
+        'No account found with that username. You can also log in using your registered Gmail address.'
+      );
+    }
+    resolvedEmail = userProfile.email;
+  }
+
+  resolvedEmail = resolvedEmail.toLowerCase().trim();
+
+  const { data: authData, error: authError } = await withTimeout(
+    supabase.auth.signInWithPassword({
+      email: resolvedEmail,
+      password,
+    }),
+    8000,
+    'Login timed out. Please check your internet connection and try again.'
+  );
 
   if (authError) throw authError;
 
   // Fetch the user's profile to check status
-  const { data: profile, error: profileError } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('id', authData.user.id)
-    .maybeSingle();
+  const profile = await getCurrentProfile(authData.session);
 
-  if (profileError) throw profileError;
   if (!profile) throw new Error('Profile not found. Please contact support.');
 
   if (profile.status === 'pending') {
-    await supabase.auth.signOut();
+    await supabase.auth.signOut().catch(() => {});
     throw new Error('Your account is pending admin approval. Please wait for an administrator to verify your account before logging in.');
   }
 
   if (profile.status === 'rejected') {
-    await supabase.auth.signOut();
+    await supabase.auth.signOut().catch(() => {});
     throw new Error('Your account has been rejected. Please contact support for more information.');
   }
 
@@ -54,25 +151,42 @@ export const signOut = async () => {
 
 // ── Auth: Get Current Session ──────────────────────────────────
 export const getCurrentSession = async () => {
-  const { data: { session }, error } = await supabase.auth.getSession();
-  if (error) throw error;
-  return session;
+  try {
+    const { data: { session }, error } = await withTimeout(
+      supabase.auth.getSession(),
+      4000,
+      'Get session timed out'
+    );
+    if (error) throw error;
+    return session;
+  } catch (e) {
+    return null;
+  }
 };
 
 // ── Profile: Get Current User Profile ──────────────────────────
-export const getCurrentProfile = async () => {
-  const session = await getCurrentSession();
-  if (!session) return null;
+export const getCurrentProfile = async (sessionParam = null) => {
+  try {
+    const session = sessionParam || (await getCurrentSession());
+    if (!session?.user?.id) return null;
 
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('id', session.user.id)
-    .maybeSingle();
+    const { data, error } = await withTimeout(
+      supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', session.user.id)
+        .maybeSingle(),
+      5000,
+      'Profile fetch timed out'
+    );
 
-  if (error) throw error;
-  if (!data) return null;
-  return data;
+    if (error) throw error;
+    if (!data) return null;
+    return data;
+  } catch (e) {
+    console.warn('getCurrentProfile error:', e.message);
+    return null;
+  }
 };
 
 // ── Profile: Get Profile by ID ─────────────────────────────────
@@ -112,13 +226,63 @@ export const getAllUsers = async () => {
 };
 
 // ── Admin: Approve User ────────────────────────────────────────
-export const approveUser = async (userId) => {
+export const approveUser = async (userId, userRecord = null) => {
   const { error } = await supabase
     .from('profiles')
     .update({ status: 'approved' })
     .eq('id', userId);
 
   if (error) throw error;
+
+  // Fetch the latest profile (includes push_token saved at registration/login)
+  let targetProfile = userRecord;
+  if (!targetProfile || !targetProfile.email || !targetProfile.push_token) {
+    const { data } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .maybeSingle();
+    targetProfile = data;
+  }
+
+  if (targetProfile) {
+    const fullName = targetProfile.full_name || 'User';
+    const role = targetProfile.role === 'driver' ? 'Driver' : 'Student';
+
+    // ── 1. Expo Push Notification (real-time, works even app is closed) ──
+    const pushToken = targetProfile.push_token;
+    if (pushToken) {
+      fetch('https://exp.host/--/api/v2/push/send', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify({
+          to: pushToken,
+          sound: 'default',
+          title: `🎉 Account Approved!`,
+          body: `Congratulations, ${fullName}! Your TriRide ${role} account has been approved. You can now log in and enjoy the ride!`,
+          data: { screen: 'Login', type: 'approval' },
+          priority: 'high',
+          channelId: 'default',
+        }),
+      }).catch((err) => {
+        console.warn('[Approval] Push notification failed:', err);
+      });
+    }
+
+    // ── 2. Email / SMS via Supabase Edge Function ──
+    // The Resend + Semaphore keys live in Edge Function secrets (Deno.env), never
+    // in the client bundle. Do not reintroduce a client-side key fallback here.
+    supabase.functions
+      .invoke('notify-approval', {
+        body: { record: { ...targetProfile, status: 'approved' } },
+      })
+      .catch((err) => {
+        console.warn('[Approval] notify-approval invocation failed:', err);
+      });
+  }
 };
 
 // ── Admin: Reject User ─────────────────────────────────────────
@@ -146,3 +310,189 @@ export const getUserStats = async () => {
 
   return { total, pending, students, drivers };
 };
+
+// ── Profile: Update User Profile ────────────────────────────────
+export const updateUserProfile = async (userId, updates) => {
+  const { data, error } = await supabase
+    .from('profiles')
+    .update(updates)
+    .eq('id', userId)
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+};
+
+// ── Profile: Base64 to ArrayBuffer Helper ───────────────────────
+const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const B64_LOOKUP = new Uint8Array(256);
+for (let i = 0; i < B64_CHARS.length; i++) {
+  B64_LOOKUP[B64_CHARS.charCodeAt(i)] = i;
+}
+
+export function decodeBase64ToArrayBuffer(base64) {
+  if (!base64 || typeof base64 !== 'string') return new ArrayBuffer(0);
+  const clean = base64.replace(/[\r\n\t ]/g, '');
+  let bufferLength = clean.length * 0.75;
+  const len = clean.length;
+  if (clean[len - 1] === '=') {
+    bufferLength--;
+    if (clean[len - 2] === '=') bufferLength--;
+  }
+  const bytes = new Uint8Array(bufferLength);
+  let p = 0;
+  for (let i = 0; i < len; i += 4) {
+    const enc1 = B64_LOOKUP[clean.charCodeAt(i)];
+    const enc2 = B64_LOOKUP[clean.charCodeAt(i + 1)];
+    const enc3 = B64_LOOKUP[clean.charCodeAt(i + 2)];
+    const enc4 = B64_LOOKUP[clean.charCodeAt(i + 3)];
+    bytes[p++] = (enc1 << 2) | (enc2 >> 4);
+    if (clean[i + 2] !== '=') bytes[p++] = ((enc2 & 15) << 4) | (enc3 >> 2);
+    if (clean[i + 3] !== '=') bytes[p++] = ((enc3 & 3) << 6) | (enc4 & 63);
+  }
+  return bytes.buffer;
+}
+
+export async function imageUriToArrayBuffer(imageUri, base64Data = null) {
+  // 1. If direct base64 provided from ImagePicker
+  if (base64Data && typeof base64Data === 'string' && base64Data.length > 0) {
+    return decodeBase64ToArrayBuffer(base64Data);
+  }
+
+  // 2. If data URI
+  if (typeof imageUri === 'string' && imageUri.startsWith('data:')) {
+    const commaIndex = imageUri.indexOf(',');
+    if (commaIndex !== -1) {
+      return decodeBase64ToArrayBuffer(imageUri.slice(commaIndex + 1));
+    }
+  }
+
+  // 3. On Web: fetch(blobUrl).arrayBuffer() works natively
+  if (Platform.OS === 'web') {
+    try {
+      const res = await fetch(imageUri);
+      return await res.arrayBuffer();
+    } catch (e) {
+      console.warn('Web fetch image error:', e);
+    }
+  }
+
+  // 4. On Native (Expo Go / Android / iOS): read file as base64
+  try {
+    const FileSystem = require('expo-file-system');
+    const base64 = await FileSystem.readAsStringAsync(imageUri, {
+      encoding: 'base64',
+    });
+    if (base64) {
+      return decodeBase64ToArrayBuffer(base64);
+    }
+  } catch (fsErr) {
+    console.warn('FileSystem readAsStringAsync failed, falling back:', fsErr);
+  }
+
+  // Fallback to fetch
+  try {
+    const response = await fetch(imageUri);
+    const buf = await response.arrayBuffer();
+    if (buf && buf.byteLength > 0) return buf;
+  } catch (err) {
+    console.warn('Fetch fallback error:', err);
+  }
+
+  return new ArrayBuffer(0);
+}
+
+// ── Profile: Upload Avatar to Supabase Storage ──────────────────
+export const uploadAvatar = async (userId, imageUri, base64Data = null) => {
+  try {
+    const arrayBuffer = await imageUriToArrayBuffer(imageUri, base64Data);
+
+    if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+      throw new Error('Image data was empty or could not be read.');
+    }
+
+    const fileExt = (imageUri && typeof imageUri === 'string')
+      ? imageUri.split('.').pop()?.split('?')[0] || 'jpg'
+      : 'jpg';
+    const filePath = `avatars/${userId}_${Date.now()}.${fileExt}`;
+    const contentType = `image/${fileExt.toLowerCase() === 'png' ? 'png' : 'jpeg'}`;
+
+    // Try uploading to 'avatars' bucket first; if missing, fallback to 'message' bucket
+    let bucketName = 'avatars';
+    let uploadRes = await supabase.storage
+      .from(bucketName)
+      .upload(filePath, arrayBuffer, { contentType, upsert: true });
+
+    if (uploadRes.error && (uploadRes.error.message?.includes('not found') || uploadRes.error.statusCode === '404')) {
+      bucketName = 'message'; // Use the public 'message' bucket visible in Supabase dashboard
+      uploadRes = await supabase.storage
+        .from(bucketName)
+        .upload(filePath, arrayBuffer, { contentType, upsert: true });
+    }
+
+    if (uploadRes.error) throw uploadRes.error;
+
+    const { data: urlData } = supabase.storage
+      .from(bucketName)
+      .getPublicUrl(filePath);
+
+    const publicUrl = urlData?.publicUrl;
+    if (!publicUrl) throw new Error('Could not get public URL');
+
+    // Update the profile with the new avatar URL
+    await updateUserProfile(userId, { avatar_url: publicUrl });
+
+    return publicUrl;
+  } catch (err) {
+    console.warn('Avatar upload error:', err.message);
+    throw err;
+  }
+};
+
+// ── Profile: Set online status ────────────────────────────────
+export const setDriverOnlineStatus = async (userId, isOnline) => {
+  const { error } = await supabase
+    .from('profiles')
+    .update({ is_online: isOnline })
+    .eq('id', userId);
+
+  if (error) throw error;
+};
+
+// ── Auth: Reset Password (Accepts Gmail, Username, or Mobile) ──
+export const resetPassword = async (identifier) => {
+  const input = (identifier || '').trim();
+  if (!input) {
+    throw new Error('Please enter your Gmail address, username, or mobile number.');
+  }
+
+  let targetEmail = input;
+
+  // If input is not an email, lookup email by username or phone
+  if (!input.includes('@')) {
+    const isPhone = /^[0-9+]+$/.test(input);
+    const query = supabase.from('profiles').select('email');
+
+    const { data: profile, error } = isPhone
+      ? await query.eq('phone', input).maybeSingle()
+      : await query.ilike('username', input).maybeSingle();
+
+    if (error || !profile?.email) {
+      throw new Error(
+        isPhone
+          ? 'No account found with that mobile number. Please check or enter your registered Gmail.'
+          : 'No account found with that username. Please check or enter your registered Gmail.'
+      );
+    }
+    targetEmail = profile.email;
+  }
+
+  const { error } = await supabase.auth.resetPasswordForEmail(targetEmail, {
+    redirectTo: 'triride://reset-password',
+  });
+
+  if (error) throw error;
+  return targetEmail;
+};
+

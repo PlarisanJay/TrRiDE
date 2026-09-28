@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -21,6 +21,18 @@ import {
   rejectUser,
   getUserStats,
 } from '../../data/auth';
+
+// ── Phase 3: Batch processing helper ──────────────────────────────────────────
+// Processes an array of items in controlled chunks to avoid overloading the DB.
+const processBatch = async (items, handler, chunkSize = 5) => {
+  for (let i = 0; i < items.length; i += chunkSize) {
+    const chunk = items.slice(i, i + chunkSize);
+    await Promise.all(chunk.map((item) => handler(item).catch(() => {})));
+  }
+};
+
+// Minimum ms between successive bulk operations (abuse / spam guard)
+const BULK_COOLDOWN_MS = 3000;
 
 if (Platform.OS === 'web' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -49,6 +61,35 @@ export default function AdminDashboardScreen({ userProfile, onBack, onLogout }) 
   const [allUsers, setAllUsers] = useState([]);
   const [stats, setStats] = useState({ total: 0, pending: 0, students: 0, drivers: 0 });
   const [loading, setLoading] = useState(true);
+
+  // ── Per-user in-flight lock: one click = one approval ──────────────────────
+  // The ref is the real guard. State alone is too late — two fast clicks both
+  // read the pre-update state and both fire, which is what sent duplicate
+  // push notifications / emails. The state set only drives the spinner.
+  const inFlight = useRef(new Set());
+  const [busyIds, setBusyIds] = useState(new Set());
+
+  const setUserBusy = (id, busy) => {
+    if (busy) inFlight.current.add(id);
+    else inFlight.current.delete(id);
+    setBusyIds((prev) => {
+      const next = new Set(prev);
+      if (busy) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+
+  // ── Phase 1: Bulk selection state ─────────────────────────────────────────
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [bulkLoading, setBulkLoading] = useState(false);
+  // Phase 3: track last bulk action timestamp to enforce cooldown
+  const lastBulkAt = useRef(0);
+
+  // Clear selection whenever the admin switches tabs
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [activeTab]);
 
   const refreshData = useCallback(async () => {
     try {
@@ -95,28 +136,114 @@ export default function AdminDashboardScreen({ userProfile, onBack, onLogout }) 
   };
 
   const handleApprove = async (user) => {
+    // A second click while the first is still running returns here and stops —
+    // no duplicate approval, no duplicate notification to the user.
+    if (inFlight.current.has(user.id)) return;
+    setUserBusy(user.id, true);
+
     try {
-      await approveUser(user.id);
+      await approveUser(user.id, user);
+      // Show the result immediately. Waiting on refreshData() first is what made
+      // the button look dead for a second or two, inviting a second click.
+      showToast(`${user.full_name} approved & notified`, 'success');
       await refreshData();
-      showToast(`${user.full_name} approved`, 'success');
     } catch (e) {
       showToast('Failed to approve user', 'error');
+    } finally {
+      setUserBusy(user.id, false);
     }
   };
 
   const handleReject = async (user) => {
+    if (inFlight.current.has(user.id)) return;
+    setUserBusy(user.id, true);
+
     try {
       await rejectUser(user.id);
-      await refreshData();
       showToast(`${user.full_name} rejected`, 'error');
+      await refreshData();
     } catch (e) {
       showToast('Failed to reject user', 'error');
+    } finally {
+      setUserBusy(user.id, false);
     }
   };
 
   const toggleExpand = (id) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setExpandedId(expandedId === id ? null : id);
+  };
+
+  // ── Phase 1: Selection helpers ─────────────────────────────────────────────
+  const toggleSelect = (id) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const selectAll = () => {
+    setSelectedIds(new Set(pendingUsers.map((u) => u.id)));
+  };
+
+  const deselectAll = () => {
+    setSelectedIds(new Set());
+  };
+
+  const allSelected =
+    pendingUsers.length > 0 && selectedIds.size === pendingUsers.length;
+
+  // ── Phase 2 + 3: Bulk action handlers ─────────────────────────────────────
+  const handleBulkApprove = async () => {
+    if (bulkLoading || selectedIds.size === 0) return;
+
+    // Phase 3: Cooldown guard
+    const now = Date.now();
+    if (now - lastBulkAt.current < BULK_COOLDOWN_MS) {
+      showToast(`Please wait a moment before bulk actions`, 'error');
+      return;
+    }
+    lastBulkAt.current = now;
+
+    setBulkLoading(true);
+    const targets = pendingUsers.filter((u) => selectedIds.has(u.id));
+    try {
+      await processBatch(targets, (user) => approveUser(user.id, user));
+      await refreshData();
+      showToast(`${targets.length} user(s) approved`, 'success');
+      deselectAll();
+    } catch (e) {
+      showToast('Bulk approve partially failed', 'error');
+    } finally {
+      setBulkLoading(false);
+    }
+  };
+
+  const handleBulkReject = async () => {
+    if (bulkLoading || selectedIds.size === 0) return;
+
+    // Phase 3: Cooldown guard
+    const now = Date.now();
+    if (now - lastBulkAt.current < BULK_COOLDOWN_MS) {
+      showToast(`Please wait a moment before bulk actions`, 'error');
+      return;
+    }
+    lastBulkAt.current = now;
+
+    setBulkLoading(true);
+    const targets = pendingUsers.filter((u) => selectedIds.has(u.id));
+    try {
+      await processBatch(targets, (user) => rejectUser(user.id));
+      await refreshData();
+      showToast(`${targets.length} user(s) rejected`, 'error');
+      deselectAll();
+    } catch (e) {
+      showToast('Bulk reject partially failed', 'error');
+    } finally {
+      setBulkLoading(false);
+    }
   };
 
   const getFilteredUsers = () => {
@@ -145,14 +272,42 @@ export default function AdminDashboardScreen({ userProfile, onBack, onLogout }) 
   const renderUserCard = (user) => {
     const isExpanded = expandedId === user.id;
     const isStudent = user.role === 'student';
+    // Phase 1: check if this card is selected
+    const isSelected = selectedIds.has(user.id);
+    // This card has an approve/reject request still running
+    const isBusy = busyIds.has(user.id);
 
     return (
-      <View key={user.id} style={[styles.userCard, SHADOWS.diffusion]}>
+      <View
+        key={user.id}
+        style={[
+          styles.userCard,
+          SHADOWS.diffusion,
+          // Phase 1: highlight selected cards
+          isSelected && styles.userCardSelected,
+        ]}
+      >
         <TouchableOpacity
           style={styles.userCardHeader}
           activeOpacity={0.7}
           onPress={() => toggleExpand(user.id)}
         >
+          {/* Phase 1: Checkbox — only shown on Pending tab */}
+          {activeTab === 'pending' && (
+            <TouchableOpacity
+              style={[
+                styles.checkbox,
+                isSelected && styles.checkboxChecked,
+              ]}
+              activeOpacity={0.7}
+              onPress={() => toggleSelect(user.id)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              {isSelected && (
+                <MaterialIcons name="check" size={14} color="#ffffff" />
+              )}
+            </TouchableOpacity>
+          )}
           <View style={styles.userAvatar}>
             <MaterialIcons
               name={isStudent ? 'school' : 'directions-car'}
@@ -193,6 +348,7 @@ export default function AdminDashboardScreen({ userProfile, onBack, onLogout }) 
             <Text style={styles.credentialsTitle}>
               {isStudent ? 'Student Credentials' : 'Driver Credentials'}
             </Text>
+            {renderCredentialRow('alternate-email', 'Username', user.username || 'N/A')}
             {isStudent ? (
               <>
                 {renderCredentialRow('badge', 'Student ID', user.student_id || 'N/A')}
@@ -214,20 +370,34 @@ export default function AdminDashboardScreen({ userProfile, onBack, onLogout }) 
         {activeTab === 'pending' && (
           <View style={styles.userCardActions}>
             <TouchableOpacity
-              style={[styles.actionBtn, styles.approveBtn]}
+              style={[styles.actionBtn, styles.approveBtn, isBusy && styles.actionBtnBusy]}
               activeOpacity={0.8}
+              disabled={isBusy}
               onPress={() => handleApprove(user)}
             >
-              <MaterialIcons name="check" size={18} color="#ffffff" />
-              <Text style={styles.actionBtnText}>Approve</Text>
+              {isBusy ? (
+                <ActivityIndicator size="small" color="#ffffff" />
+              ) : (
+                <>
+                  <MaterialIcons name="check" size={18} color="#ffffff" />
+                  <Text style={styles.actionBtnText}>Approve</Text>
+                </>
+              )}
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.actionBtn, styles.rejectBtn]}
+              style={[styles.actionBtn, styles.rejectBtn, isBusy && styles.actionBtnBusy]}
               activeOpacity={0.8}
+              disabled={isBusy}
               onPress={() => handleReject(user)}
             >
-              <MaterialIcons name="close" size={18} color="#ffffff" />
-              <Text style={styles.actionBtnText}>Reject</Text>
+              {isBusy ? (
+                <ActivityIndicator size="small" color="#ffffff" />
+              ) : (
+                <>
+                  <MaterialIcons name="close" size={18} color="#ffffff" />
+                  <Text style={styles.actionBtnText}>Reject</Text>
+                </>
+              )}
             </TouchableOpacity>
           </View>
         )}
@@ -383,6 +553,71 @@ export default function AdminDashboardScreen({ userProfile, onBack, onLogout }) 
             </Text>
           </View>
         </View>
+
+        {/* ── Phase 1: Select All / Deselect All row (Pending tab only) ── */}
+        {activeTab === 'pending' && filteredUsers.length > 0 && (
+          <View style={styles.selectionBar}>
+            <TouchableOpacity
+              style={styles.selectAllBtn}
+              activeOpacity={0.7}
+              onPress={allSelected ? deselectAll : selectAll}
+            >
+              <View style={[styles.checkbox, allSelected && styles.checkboxChecked]}>
+                {allSelected && <MaterialIcons name="check" size={14} color="#ffffff" />}
+              </View>
+              <Text style={styles.selectAllText}>
+                {allSelected ? 'Deselect All' : 'Select All'}
+              </Text>
+            </TouchableOpacity>
+            {selectedIds.size > 0 && (
+              <Text style={styles.selectionCount}>
+                {selectedIds.size} selected
+              </Text>
+            )}
+          </View>
+        )}
+
+        {/* ── Phase 2: Bulk Action Bar ── */}
+        {activeTab === 'pending' && selectedIds.size > 0 && (
+          <View style={styles.bulkActionBar}>
+            {bulkLoading ? (
+              <View style={styles.bulkLoadingRow}>
+                <ActivityIndicator size="small" color="#ffffff" />
+                <Text style={styles.bulkLoadingText}>Processing...</Text>
+              </View>
+            ) : (
+              <>
+                <TouchableOpacity
+                  style={[styles.bulkBtn, styles.bulkApproveBtn]}
+                  activeOpacity={0.8}
+                  onPress={handleBulkApprove}
+                >
+                  <MaterialIcons name="done-all" size={18} color="#ffffff" />
+                  <Text style={styles.bulkBtnText}>
+                    Approve All ({selectedIds.size})
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.bulkBtn, styles.bulkRejectBtn]}
+                  activeOpacity={0.8}
+                  onPress={handleBulkReject}
+                >
+                  <MaterialIcons name="block" size={18} color="#ffffff" />
+                  <Text style={styles.bulkBtnText}>
+                    Reject All ({selectedIds.size})
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.bulkCancelBtn}
+                  activeOpacity={0.7}
+                  onPress={deselectAll}
+                >
+                  <MaterialIcons name="close" size={18} color={COLORS.onSurfaceVariant} />
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        )}
 
         {filteredUsers.length === 0 ? (
           <View style={styles.emptyState}>
@@ -909,5 +1144,109 @@ const styles = StyleSheet.create({
   actionBtnText: {
     ...TYPOGRAPHY.button,
     color: '#ffffff',
+  },
+  // Shown while a card's approve/reject is in flight
+  actionBtnBusy: {
+    opacity: 0.7,
+  },
+
+  // ── Phase 1: Checkbox styles ────────────────────────────────────────────
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: COLORS.outline,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'transparent',
+  },
+  checkboxChecked: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  userCardSelected: {
+    borderColor: COLORS.primary,
+    borderWidth: 2,
+    backgroundColor: COLORS.primaryFixed,
+  },
+
+  // Phase 1: Select All bar
+  selectionBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.xs,
+    marginBottom: SPACING.sm,
+  },
+  selectAllBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.sm,
+  },
+  selectAllText: {
+    ...TYPOGRAPHY.body,
+    fontWeight: '600',
+    color: COLORS.primary,
+  },
+  selectionCount: {
+    ...TYPOGRAPHY.caption,
+    color: COLORS.onSurfaceVariant,
+    fontWeight: '600',
+  },
+
+  // ── Phase 2: Bulk Action Bar ────────────────────────────────────────────
+  bulkActionBar: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceContainerHigh,
+    borderRadius: ROUNDED.lg,
+    padding: SPACING.sm,
+    marginBottom: SPACING.md,
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+  },
+  bulkBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    height: 42,
+    borderRadius: ROUNDED.md,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: SPACING.xs,
+  },
+  bulkApproveBtn: {
+    backgroundColor: COLORS.secondary,
+  },
+  bulkRejectBtn: {
+    backgroundColor: COLORS.error,
+  },
+  bulkBtnText: {
+    ...TYPOGRAPHY.button,
+    color: '#ffffff',
+    fontSize: 13,
+  },
+  bulkCancelBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: ROUNDED.md,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceContainerLow,
+  },
+  bulkLoadingRow: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: SPACING.sm,
+    paddingVertical: SPACING.sm,
+  },
+  bulkLoadingText: {
+    ...TYPOGRAPHY.body,
+    color: COLORS.onSurfaceVariant,
+    fontWeight: '600',
   },
 });

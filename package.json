@@ -3,16 +3,23 @@
   "version": "1.0.0",
   "main": "index.js",
   "dependencies": {
+    "@expo/ngrok": "^4.1.0",
     "@expo/vector-icons": "^15.0.2",
     "@supabase/supabase-js": "^2.49.4",
-    "expo": "~57.0.8",
+    "expo": "~57.0.20",
+    "expo-constants": "~57.0.19",
+    "expo-device": "~57.0.2",
     "expo-file-system": "~57.0.1",
     "expo-font": "~57.0.1",
-    "expo-location": "~57.0.6",
+    "expo-image-picker": "~57.0.19",
+    "expo-linear-gradient": "~57.0.2",
+    "expo-location": "~57.0.16",
+    "expo-notifications": "~57.0.20",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",
-    "react-native": "0.86.0",
+    "react-native": "0.86.3",
+    "react-native-maps": "1.27.2",
     "react-native-safe-area-context": "~5.7.0",
     "react-native-url-polyfill": "^2.0.0",
     "react-native-web": "^0.21.2",
@@ -24,5 +31,9 @@
     "ios": "expo start --ios",
     "web": "expo start --web"
   },
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "@types/react": "~19.2.4",
+    "typescript": "~6.0.3"
+  }
 }

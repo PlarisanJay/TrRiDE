@@ -1,3 +1,5 @@
+import { StyleSheet } from 'react-native';
+
 export const COLORS = {
   surface: '#faf8ff',
   surfaceDim: '#d9d9e5',
@@ -107,13 +109,199 @@ export const TYPOGRAPHY = {
   },
 };
 
-// Diffusion shadow for elevation as described in DESIGN.md
+// ─────────────────────────────────────────────────────────────
+// Refined depth system.
+//
+// The app had drifted into a Tailwind slate/blue palette through
+// 420 raw hex values, and into a flat-primary look. These token
+// sets formalise what was actually being used so screens can
+// reference the theme instead of hardcoding.
+// ─────────────────────────────────────────────────────────────
+
+// Text / icon ink, lightest to heaviest.
+export const INK = {
+  strong: '#0f172a',
+  body: '#1e293b',
+  deep: '#334155',
+  slate: '#475569',
+  muted: '#64748b',
+  subtle: '#94a3b8',
+  faint: '#cbd5e1',
+};
+
+// Surface tiers: raised cards sit above sunken wells sit above the page.
+export const CANVAS = {
+  base: '#f8fafc',
+  raised: '#ffffff',
+  sunken: '#f1f5f9',
+  line: '#e2e8f0',
+};
+
+// Status / semantic accents. Each has a wash (very light background),
+// a soft (border / chip), and a solid (icon / text) variant.
+export const ACCENT = {
+  blue: '#2563eb',
+  blueDeep: '#1d4ed8',
+  // Mid blue used for selection rings and emphasis borders.
+  blueMid: '#bfdbfe',
+  blueSoft: '#dbeafe',
+  blueWash: '#eff6ff',
+
+  indigo: '#818cf8',
+  sky: '#0284c7',
+  skySoft: '#e0f2fe',
+
+  green: '#16a34a',
+  greenBright: '#22c55e',
+  greenMid: '#86efac',
+  greenSoft: '#bbf7d0',
+  greenWash: '#f0fdf4',
+  // Text ink for use ON greenSoft / greenWash fills. The solid green is far
+  // too light to read as text on a tinted surface.
+  greenInk: '#14532d',
+  greenInkMuted: '#166534',
+
+  amber: '#f59e0b',
+  // Text ink for use ON amberSoft / amberWash fills. The solid amber is far
+  // too light to read as text on a tinted surface, same as the green pair.
+  amberInk: '#7c2d12',
+  amberInkMuted: '#9a3412',
+  orange: '#f97316',
+  orangeDeep: '#ea580c',
+  orangeSoft: '#ffedd5',
+  orangeWash: '#fff7ed',
+
+  red: '#ef4444',
+};
+
+// Elevation scale. Deliberately low-opacity with a generous radius so
+// cards read as lifted rather than outlined, and Android `elevation`
+// is kept <= 3 because anything higher renders as a hard drop shadow.
+//
+// ELEVATION replaces the flat SHADOWS tokens below; new code should
+// prefer it. SHADOWS is retained for the screens outside this pass.
+export const ELEVATION = {
+  none: {},
+  xs: {
+    shadowColor: INK.strong,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.03,
+    shadowRadius: 2,
+    elevation: 0,
+  },
+  sm: {
+    shadowColor: INK.strong,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.035,
+    shadowRadius: 6,
+    elevation: 1,
+  },
+  md: {
+    shadowColor: INK.strong,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.045,
+    shadowRadius: 12,
+    elevation: 2,
+  },
+  lg: {
+    shadowColor: INK.strong,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.055,
+    shadowRadius: 20,
+    elevation: 3,
+  },
+  // Tinted lift, reserved for a single primary CTA. Do not spread.
+  glow: {
+    shadowColor: ACCENT.blueDeep,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.16,
+    shadowRadius: 12,
+    elevation: 3,
+  },
+};
+
+// Hairline strokes. StyleSheet.hairlineWidth is ~0.5pt on modern
+// devices, so a "1px" border no longer reads as a hard line.
+export const BORDERS = {
+  none: {},
+  soft: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(15, 23, 42, 0.05)',
+  },
+  hair: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(15, 23, 42, 0.07)',
+  },
+  strong: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(15, 23, 42, 0.12)',
+  },
+  accent: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(37, 99, 235, 0.28)',
+  },
+};
+
+// Gradient ramps for expo-linear-gradient.
+// `brand` / `brandBright` are for small, high-focus surfaces (FAB,
+// active indicator). `wash` ramps are for large surfaces where a flat
+// fill looked dead. Nothing here is a saturated multi-hue gradient.
+export const GRADIENTS = {
+  brand: {
+    colors: ['#0a3d91', '#2f5fe0'],
+    start: { x: 0, y: 0 },
+    end: { x: 1, y: 1 },
+  },
+  brandBright: {
+    colors: ['#2563eb', '#4f6ef7'],
+    start: { x: 0, y: 0 },
+    end: { x: 1, y: 1 },
+  },
+  horizontal: {
+    colors: ['#0a3d91', '#2f5fe0'],
+    start: { x: 0, y: 0 },
+    end: { x: 1, y: 0 },
+  },
+  // Very light wash for large cards and headers.
+  wash: {
+    colors: ['#f5f7ff', '#eaeefe'],
+    start: { x: 0, y: 0 },
+    end: { x: 1, y: 1 },
+  },
+  washCool: {
+    colors: ['#f4f8ff', '#eaf1fe'],
+    start: { x: 0, y: 0 },
+    end: { x: 1, y: 1 },
+  },
+  // Hero backdrop for the Profile screen.
+  dusk: {
+    colors: ['#1b2a5e', '#3a4a9c'],
+    start: { x: 0, y: 0 },
+    end: { x: 1, y: 1 },
+  },
+};
+
+// Subtle shadow tokens — clean, professional, no heavy floating cards
 export const SHADOWS = {
   diffusion: {
     shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 4,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  card: {
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 3,
+    elevation: 1,
+  },
+  button: {
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 2,
+    elevation: 1,
   },
 };

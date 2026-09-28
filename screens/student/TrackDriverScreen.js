@@ -1,17 +1,51 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  Alert,
+  ActivityIndicator,
+  ScrollView,
+  Linking,
+  Platform,
+} from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
-import { COLORS, TYPOGRAPHY, SPACING, ROUNDED, SHADOWS } from '../../theme';
-import { TOLEDO_CITY } from '../../config/mapConfig';
-import { getTripById, subscribeToTrip, cancelTripByStudent } from '../../data/trips';
+import {
+  COLORS,
+  TYPOGRAPHY,
+  SPACING,
+  ROUNDED,
+  ELEVATION,
+  INK,
+  CANVAS,
+  ACCENT,
+  BORDERS,
+} from '../../theme';
+import { TOLEDO_CITY, fetchRoute, haversineDistance, formatDistanceText, formatDurationText } from '../../config/mapConfig';
+import { getTripById, subscribeToTrip, cancelTripWithReason } from '../../data/trips';
 import { getProfileById } from '../../data/auth';
+import { supabase } from '../../config/supabase';
 import MapPreview from '../../components/MapPreview';
+import UserAvatar from '../../components/UserAvatar';
+import CancelRideModal from '../../components/CancelRideModal';
 
 export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, onNavigate }) {
   const [trip, setTrip] = useState(null);
   const [driver, setDriver] = useState(null);
   const [loading, setLoading] = useState(true);
   const [cancelling, setCancelling] = useState(false);
+  const [routeCoordinates, setRouteCoordinates] = useState([]);
+  const [routeDistText, setRouteDistText] = useState('');
+  const [routeDurText, setRouteDurText] = useState('');
+
+  // Live driver location & status
+  const [driverCoords, setDriverCoords] = useState(null);
+  const [driverStatusText, setDriverStatusText] = useState('ON THE WAY');
+  const [showCancelModal, setShowCancelModal] = useState(false);
+
+  const mapRef = useRef(null);
+  const hasHandledCancelRef = useRef(false);
 
   useEffect(() => {
     if (!tripId) { setLoading(false); return; }
@@ -21,7 +55,7 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
       try {
         const t = await getTripById(tripId);
         setTrip(t);
-        if (t.driver_id) {
+        if (t?.driver_id) {
           const d = await getProfileById(t.driver_id);
           setDriver(d);
         }
@@ -31,40 +65,193 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
 
     unsub = subscribeToTrip(tripId, async (updated) => {
       setTrip(updated);
-      if (updated.driver_id && !driver) {
+      if (updated?.driver_id && !driver) {
         const d = await getProfileById(updated.driver_id);
         setDriver(d);
+      }
+      if (updated?.status === 'cancelled' && !hasHandledCancelRef.current) {
+        hasHandledCancelRef.current = true;
+        setShowCancelModal(false);
+        Alert.alert(
+          'Ride Cancelled',
+          'This ride has been cancelled and terminated.' +
+            (updated.notes ? `\n\n${updated.notes}` : ''),
+          [{ text: 'OK', onPress: onCancelTrip }]
+        );
       }
     });
 
     return () => { if (unsub) unsub(); };
   }, [tripId]);
 
-  const handleCancel = async () => {
-    Alert.alert('Cancel Ride', 'Are you sure you want to cancel?', [
-      { text: 'No', style: 'cancel' },
-      {
-        text: 'Yes',
-        style: 'destructive',
-        onPress: async () => {
-          if (cancelling) return;
-          setCancelling(true);
-          try {
-            const result = await cancelTripByStudent(tripId);
-            if (result) {
-              onCancelTrip();
-            } else {
-              Alert.alert('Error', 'Could not cancel trip. It may have already been accepted by a driver.');
-            }
-          } catch (e) {
-            console.error('Cancel trip error:', e);
-            Alert.alert('Error', 'Could not cancel trip. Please try again.');
-          } finally {
-            setCancelling(false);
-          }
-        },
-      },
-    ]);
+  // Supabase real-time broadcast listener for driver GPS
+  useEffect(() => {
+    if (!tripId) return;
+    const channel = supabase.channel(`trip-loc-${tripId}`);
+    channel.on('broadcast', { event: 'driver_location' }, (payload) => {
+      if (payload?.payload?.latitude && payload?.payload?.longitude) {
+        setDriverCoords({
+          latitude: payload.payload.latitude,
+          longitude: payload.payload.longitude,
+        });
+        if (payload.payload.statusText) {
+          setDriverStatusText(payload.payload.statusText);
+        }
+      }
+    }).subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [tripId]);
+
+  // Fallback / initial driver position based on trip status
+  useEffect(() => {
+    if (!trip?.pickup_lat || !trip?.pickup_lng) return;
+
+    if (!driverCoords && trip.driver_id) {
+      if (trip.status === 'accepted') {
+        // Driver approaching pickup (~400m offset)
+        setDriverCoords({
+          latitude: trip.pickup_lat + 0.0032,
+          longitude: trip.pickup_lng - 0.0025,
+        });
+        setDriverStatusText('ON THE WAY');
+      } else if (trip.status === 'in_progress') {
+        // Driver between pickup and destination
+        const midLat = trip.dest_lat ? (trip.pickup_lat + trip.dest_lat) / 2 : trip.pickup_lat;
+        const midLng = trip.dest_lng ? (trip.pickup_lng + trip.dest_lng) / 2 : trip.pickup_lng;
+        setDriverCoords({
+          latitude: midLat,
+          longitude: midLng,
+        });
+        setDriverStatusText('DRIVING');
+      }
+    }
+  }, [trip?.pickup_lat, trip?.pickup_lng, trip?.dest_lat, trip?.dest_lng, trip?.status, trip?.driver_id, driverCoords]);
+
+  // Route calculation
+  useEffect(() => {
+    let isMounted = true;
+    if (trip?.pickup_lat && trip?.dest_lat) {
+      const p = { latitude: trip.pickup_lat, longitude: trip.pickup_lng };
+      const d = { latitude: trip.dest_lat, longitude: trip.dest_lng };
+      fetchRoute(p, d).then((res) => {
+        if (isMounted && res) {
+          setRouteCoordinates(res.coordinates || []);
+          setRouteDistText(res.distanceText || '');
+          setRouteDurText(res.durationText || '');
+        }
+      }).catch(() => {
+        if (isMounted) {
+          const distKm = haversineDistance(trip.pickup_lat, trip.pickup_lng, trip.dest_lat, trip.dest_lng);
+          setRouteDistText(formatDistanceText(Math.round(distKm * 1000)));
+          const estMins = Math.max(1, Math.round(distKm * 3));
+          setRouteDurText(formatDurationText(estMins));
+        }
+      });
+    }
+    return () => { isMounted = false; };
+  }, [trip?.pickup_lat, trip?.pickup_lng, trip?.dest_lat, trip?.dest_lng]);
+
+  // Map markers: Driver, Pickup, Destination
+  const markers = useMemo(() => {
+    const list = [];
+    if (trip?.pickup_lat && trip?.pickup_lng) {
+      list.push({
+        id: 'pickup',
+        coordinate: { latitude: trip.pickup_lat, longitude: trip.pickup_lng },
+        type: 'pickup',
+        label: 'Pick-up',
+        color: ACCENT.orange,
+      });
+    }
+    if (trip?.dest_lat && trip?.dest_lng) {
+      list.push({
+        id: 'destination',
+        coordinate: { latitude: trip.dest_lat, longitude: trip.dest_lng },
+        type: 'destination',
+        label: 'Drop-off',
+        color: ACCENT.blue,
+      });
+    }
+    if (driver && driverCoords && trip?.status !== 'cancelled' && trip?.status !== 'completed') {
+      list.push({
+        id: 'driver',
+        coordinate: driverCoords,
+        type: 'driver',
+        label: driver.full_name || 'Driver',
+        statusText: driverStatusText || (trip?.status === 'in_progress' ? 'DRIVING' : 'ON THE WAY'),
+        color: ACCENT.green,
+      });
+    }
+    return list;
+  }, [trip, driver, driverCoords, driverStatusText]);
+
+  // Auto-fit to show all markers (driver, pickup, destination) without manual drag or zoom
+  useEffect(() => {
+    if (markers.length > 0) {
+      const timer = setTimeout(() => {
+        mapRef.current?.fitBounds();
+      }, 350);
+      return () => clearTimeout(timer);
+    }
+  }, [markers.length, routeCoordinates.length]);
+
+  const handleFitBounds = useCallback(() => {
+    mapRef.current?.fitBounds();
+  }, []);
+
+  const handleRecenter = useCallback(() => {
+    if (driverCoords) {
+      mapRef.current?.recenter(driverCoords.latitude, driverCoords.longitude);
+    } else if (trip?.pickup_lat) {
+      mapRef.current?.recenter(trip.pickup_lat, trip.pickup_lng);
+    }
+  }, [driverCoords, trip?.pickup_lat, trip?.pickup_lng]);
+
+  const handleCall = () => {
+    if (driver?.phone) {
+      Linking.openURL(`tel:${driver.phone}`).catch(() => {
+        Alert.alert('Cannot Call', 'Unable to open phone dialer.');
+      });
+    } else {
+      Alert.alert('No Phone Number', 'The driver has not provided a phone number.');
+    }
+  };
+
+  const handleCancelPress = () => {
+    if (trip?.status === 'in_progress') {
+      Alert.alert(
+        'Ride in Progress',
+        'This ride is currently active and in progress. Rides cannot be cancelled while on the road. Please reach your destination safely.'
+      );
+      return;
+    }
+    setShowCancelModal(true);
+  };
+
+  const handleConfirmCancel = async (reason) => {
+    setCancelling(true);
+    try {
+      hasHandledCancelRef.current = true;
+      await cancelTripWithReason({
+        tripId,
+        role: 'student',
+        reason,
+      });
+      setShowCancelModal(false);
+      Alert.alert(
+        'Ride Cancelled',
+        'Your ride request has been cancelled and terminated.',
+        [{ text: 'OK', onPress: onCancelTrip }]
+      );
+    } catch (e) {
+      hasHandledCancelRef.current = false;
+      Alert.alert('Cannot Cancel', e?.message || 'Could not cancel trip.');
+    } finally {
+      setCancelling(false);
+    }
   };
 
   if (loading) {
@@ -84,44 +271,61 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
     );
   }
 
-  const mapRegion = {
-    latitude: trip.pickup_lat,
-    longitude: trip.pickup_lng,
-    latitudeDelta: 0.03,
-    longitudeDelta: 0.03,
-  };
-
-  const markers = [
-    { id: 'pickup', coordinate: { latitude: trip.pickup_lat, longitude: trip.pickup_lng }, color: COLORS.primary },
-    ...(trip.dest_lat && trip.dest_lng
-      ? [{ id: 'dest', coordinate: { latitude: trip.dest_lat, longitude: trip.dest_lng }, color: '#006c49' }]
-      : []),
-  ];
-
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <TouchableOpacity style={styles.headerIconBtn} onPress={handleCancel}>
-            <MaterialIcons name="arrow-back" size={24} color={COLORS.primary} />
+      {/* Top Map Section - Identical Placement to BookRideScreen */}
+      <View style={styles.mapSection}>
+        <MapPreview
+          ref={mapRef}
+          region={{
+            latitude: trip.pickup_lat || TOLEDO_CITY.latitude,
+            longitude: trip.pickup_lng || TOLEDO_CITY.longitude,
+            latitudeDelta: 0.03,
+            longitudeDelta: 0.03,
+          }}
+          markers={markers}
+          routeCoordinates={routeCoordinates}
+          durationText={routeDurText || '30 MIN'}
+          scrollEnabled={true}
+        />
+
+        {/* Floating Header */}
+        <View style={styles.floatingHeaderArea} pointerEvents="box-none">
+          <TouchableOpacity style={styles.floatingBackBtn} activeOpacity={0.85} onPress={() => onNavigate('StudentDashboard')}>
+            <MaterialIcons name="arrow-back" size={22} color={INK.body} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>Track Driver</Text>
+
+          <View style={styles.headerTitleBadge}>
+            <Text style={styles.headerTitleBadgeText}>Track Driver</Text>
+          </View>
+
+          <TouchableOpacity style={styles.floatingAvatarBtn} activeOpacity={0.85} onPress={() => onNavigate('Profile')}>
+            <UserAvatar uri={userProfile?.avatar_url} name={userProfile?.full_name || 'Student'} size={38} />
+          </TouchableOpacity>
         </View>
-        <TouchableOpacity style={styles.avatarBtn} onPress={() => onNavigate('Profile')}>
-          <Image
-            source={{ uri: 'https://lh3.googleusercontent.com/aida-public/AB6AXuCRRTrXBP66RIGGWe_yjfYPXqqmjb9_2Z1b-3pBsp4gsGY9tFcmJWUgiPQZCv9-zL7Ow6lR9VabxSGFdPYgRAdoTwSwnK4SdFTlsvDuzfa1zx-44GNvhM8af1rTOBq8vEMVglBzqPdyVmuD0K8TDdCnpeAKxrpyNviSDfN-uHyowq1ISNm4_y2AL2IhFz8gE4-yZGwzh2o1EpjelkekThDPWiAlyFh4ifateDo3m_b6_0bWK-c3PjUOgc2Msb110cg1g_aZFCV9ppg' }}
-            style={styles.avatar}
-          />
-        </TouchableOpacity>
+
+        {/* Floating Map Actions (Recenter & Fit All) */}
+        <View style={styles.floatingMapActions}>
+          <TouchableOpacity style={styles.mapActionBtn} activeOpacity={0.8} onPress={handleRecenter}>
+            <MaterialIcons name="near-me" size={20} color={ACCENT.green} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.mapActionBtn} activeOpacity={0.8} onPress={handleFitBounds}>
+            <MaterialIcons name="crop-free" size={20} color={INK.body} />
+          </TouchableOpacity>
+        </View>
       </View>
 
-      <View style={styles.mapWrapper}>
-        <MapPreview region={mapRegion} markers={markers} />
-      </View>
+      {/* Bottom Sheet Card Container */}
+      <View style={styles.sheetContainer}>
+        <View style={styles.dragHandleTouchArea}>
+          <View style={styles.dragHandle} />
+        </View>
 
-      <View style={[styles.bottomSheet, SHADOWS.diffusion]}>
-        <View style={styles.dragHandle} />
-        <View style={styles.bottomSheetContent}>
+        <ScrollView
+          style={styles.sheetScroll}
+          contentContainerStyle={styles.sheetContent}
+          showsVerticalScrollIndicator={false}
+        >
           {trip.status === 'pending' && (
             <View style={styles.statusRow}>
               <View style={styles.statusBadgePending}>
@@ -131,46 +335,96 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
             </View>
           )}
 
-          {trip.status === 'accepted' && driver && (
-            <>
-              <View style={styles.statusRow}>
-                <View style={styles.statusBadgeAccepted}>
-                  <View style={styles.pulseDot} />
-                  <Text style={styles.statusTextAccepted}>Driver accepted your ride</Text>
-                </View>
+          {trip.status === 'accepted' && (
+            <View style={styles.statusRow}>
+              <View style={styles.statusBadgeAccepted}>
+                <View style={styles.pulseDot} />
+                <Text style={styles.statusTextAccepted}>
+                  {driverStatusText === 'STANDBY' ? 'Driver is on standby at pickup' : 'Driver is on the way to pick you up'}
+                </Text>
               </View>
-              <View style={styles.driverCard}>
-                <View style={styles.driverAvatarBg}>
-                  <MaterialIcons name="person" size={32} color={COLORS.primary} />
-                </View>
-                <View style={styles.driverDetails}>
-                  <Text style={styles.driverName}>{driver.full_name}</Text>
-                  <Text style={styles.driverVehicle}>
-                    {driver.vehicle_type || 'Tricycle'} • {driver.plate_number || 'N/A'}
-                  </Text>
-                </View>
-                <View style={styles.actionButtons}>
-                  <TouchableOpacity style={styles.circularBtn}>
-                    <MaterialIcons name="call" size={20} color={COLORS.primary} />
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.circularBtn} onPress={() => onNavigate('Messages')}>
-                    <MaterialIcons name="chat" size={20} color={COLORS.primary} />
-                  </TouchableOpacity>
-                </View>
-              </View>
-              <View style={styles.tripInfo}>
-                <View style={styles.tripInfoItem}>
-                  <MaterialIcons name="trip-origin" size={16} color={COLORS.primary} />
-                  <Text style={styles.tripInfoText} numberOfLines={1}>{trip.pickup_text || 'Pickup'}</Text>
-                </View>
-                <View style={styles.tripInfoItem}>
-                  <MaterialIcons name="location-on" size={16} color={COLORS.secondary} />
-                  <Text style={styles.tripInfoText} numberOfLines={1}>{trip.dest_text || 'Destination'}</Text>
-                </View>
-                <Text style={styles.passengerText}>{trip.passengers} passenger{trip.passengers > 1 ? 's' : ''}</Text>
-              </View>
-            </>
+            </View>
           )}
+
+          {trip.status === 'in_progress' && (
+            <View style={styles.statusRow}>
+              <View style={styles.statusBadgeAccepted}>
+                <View style={styles.pulseDot} />
+                <Text style={styles.statusTextAccepted}>En route to your destination</Text>
+              </View>
+            </View>
+          )}
+
+          {driver && (
+            <View style={[styles.driverCard]}>
+              <UserAvatar uri={driver.avatar_url} name={driver.full_name || 'Driver'} size={52} />
+              <View style={styles.driverDetails}>
+                <Text style={styles.driverName}>{driver.full_name}</Text>
+                <Text style={styles.driverVehicle}>
+                  {driver.vehicle_type || 'Tricycle'} • {driver.plate_number || 'N/A'}
+                </Text>
+              </View>
+              <View style={styles.actionButtons}>
+                <TouchableOpacity style={styles.circularBtn} onPress={handleCall} activeOpacity={0.75}>
+                  <MaterialIcons name="call" size={20} color={COLORS.primary} />
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.circularBtn} onPress={() => onNavigate('Messages', { tripId: trip?.id || tripId })} activeOpacity={0.75}>
+                  <MaterialIcons name="chat" size={20} color={COLORS.primary} />
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+
+          {/* Trip Info Card */}
+          <View style={[styles.tripCard]}>
+            <View style={styles.tripCardHeader}>
+              <Text style={styles.tripCardTitle}>Trip Route</Text>
+              {routeDistText && routeDurText ? (
+                <View style={styles.routeDistanceBadge}>
+                  <Text style={styles.routeDistanceBadgeText}>📍 {routeDistText} • ⏱️ {routeDurText}</Text>
+                </View>
+              ) : null}
+            </View>
+
+            <View style={styles.tripInfo}>
+              <View style={styles.tripInfoItem}>
+                <View style={[styles.tripIconBg, { backgroundColor: ACCENT.orangeWash }]}>
+                  <MaterialIcons name="trip-origin" size={18} color={ACCENT.orange} />
+                </View>
+                <View style={styles.tripInfoTextWrap}>
+                  <Text style={styles.tripInfoLabel}>Pickup</Text>
+                  <Text style={styles.tripInfoText} numberOfLines={2}>{trip.pickup_text || 'Pickup'}</Text>
+                </View>
+              </View>
+
+              <View style={styles.tripDivider} />
+
+              <View style={styles.tripInfoItem}>
+                <View style={[styles.tripIconBg, { backgroundColor: ACCENT.blueWash }]}>
+                  <MaterialIcons name="location-on" size={18} color={ACCENT.blue} />
+                </View>
+                <View style={styles.tripInfoTextWrap}>
+                  <Text style={styles.tripInfoLabel}>Destination</Text>
+                  <Text style={styles.tripInfoText} numberOfLines={2}>{trip.dest_text || 'Destination'}</Text>
+                </View>
+              </View>
+            </View>
+
+            <View style={styles.tripMetaRow}>
+              <View style={styles.tripMetaItem}>
+                <MaterialIcons name="people" size={16} color={COLORS.onSurfaceVariant} />
+                <Text style={styles.tripMetaText}>
+                  {trip.passengers} passenger{trip.passengers > 1 ? 's' : ''}
+                </Text>
+              </View>
+              {trip.notes ? (
+                <View style={styles.tripMetaItem}>
+                  <MaterialIcons name="note" size={16} color={COLORS.onSurfaceVariant} />
+                  <Text style={styles.tripMetaText} numberOfLines={1}>{trip.notes}</Text>
+                </View>
+              ) : null}
+            </View>
+          </View>
 
           {(trip.status === 'completed' || trip.status === 'cancelled') && (
             <View style={styles.statusRow}>
@@ -184,7 +438,7 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
             <TouchableOpacity
               style={[styles.btnCancel, cancelling && styles.btnCancelDisabled]}
               activeOpacity={0.8}
-              onPress={handleCancel}
+              onPress={handleCancelPress}
               disabled={cancelling}
             >
               {cancelling ? (
@@ -195,82 +449,307 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
               <Text style={styles.btnCancelText}>{cancelling ? 'Cancelling...' : 'Cancel Ride'}</Text>
             </TouchableOpacity>
           )}
-        </View>
+        </ScrollView>
       </View>
+
+      <CancelRideModal
+        visible={showCancelModal}
+        role="student"
+        tripStatus={trip.status}
+        onClose={() => setShowCancelModal(false)}
+        onConfirm={handleConfirmCancel}
+        loading={cancelling}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: COLORS.background },
-  centered: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
-  errorText: { fontSize: 16, color: COLORS.onSurfaceVariant },
-  header: {
-    flexDirection: 'row', height: 60, paddingTop: 8, backgroundColor: COLORS.surface,
-    borderBottomWidth: 1, borderBottomColor: COLORS.outlineVariant,
-    justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: SPACING.marginMobile, position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10,
+  container: {
+    flex: 1,
+    backgroundColor: CANVAS.raised,
   },
-  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },
-  headerIconBtn: { padding: SPACING.xs },
-  headerTitle: { ...TYPOGRAPHY.sectionTitle, color: COLORS.primary, fontWeight: '800' },
-  avatarBtn: { width: 40, height: 40, borderRadius: 20, overflow: 'hidden' },
-  avatar: { width: '100%', height: '100%' },
-  mapWrapper: { flex: 1, marginTop: 68 },
-  bottomSheet: {
-    position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: '#ffffff',
-    borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingBottom: 40,
-    borderWidth: 1, borderColor: COLORS.outlineVariant,
+  centered: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 12,
+  },
+  errorText: {
+    fontSize: 16,
+    color: COLORS.onSurfaceVariant,
+  },
+  mapSection: {
+    flex: 0.85,
+    minHeight: 250,
+    position: 'relative',
+    backgroundColor: CANVAS.sunken,
+  },
+  floatingHeaderArea: {
+    position: 'absolute',
+    top: Platform.OS === 'android' ? 14 : 10,
+    left: 16,
+    right: 16,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    zIndex: 50,
+  },
+  floatingBackBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: CANVAS.raised,
+    justifyContent: 'center',
+    alignItems: 'center',
+    ...ELEVATION.lg,
+  },
+  headerTitleBadge: {
+    backgroundColor: 'rgba(255, 255, 255, 0.94)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    ...ELEVATION.sm,
+  },
+  headerTitleBadgeText: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: INK.strong,
+    letterSpacing: -0.3,
+  },
+  floatingAvatarBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    overflow: 'hidden',
+    ...ELEVATION.lg,
+  },
+  floatingMapActions: {
+    position: 'absolute',
+    right: 16,
+    bottom: 28,
+    gap: 10,
+    zIndex: 50,
+  },
+  mapActionBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    backgroundColor: CANVAS.raised,
+    justifyContent: 'center',
+    alignItems: 'center',
+    ...ELEVATION.lg,
+    ...BORDERS.hair,
+  },
+  // Overlaps the map, so this shadow is load-bearing rather than decorative.
+  sheetContainer: {
+    flex: 1.15,
+    backgroundColor: CANVAS.raised,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    marginTop: -20,
+    ...ELEVATION.lg,
+    zIndex: 20,
+  },
+  dragHandleTouchArea: {
+    alignItems: 'center',
+    paddingTop: 10,
+    paddingBottom: 4,
+    width: '100%',
   },
   dragHandle: {
-    width: 40, height: 5, borderRadius: 2.5, backgroundColor: COLORS.outlineVariant,
-    alignSelf: 'center', marginTop: 12,
+    width: 50,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: INK.faint,
   },
-  bottomSheetContent: {
-    paddingHorizontal: SPACING.marginMobile, paddingTop: SPACING.sm,
-    maxWidth: 600, alignSelf: 'center', width: '100%',
+  sheetScroll: {
+    flex: 1,
   },
-  statusRow: { marginBottom: SPACING.md },
+  sheetContent: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    paddingBottom: 40,
+    gap: 14,
+  },
+  statusRow: {
+    marginBottom: 4,
+  },
   statusBadgePending: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,74,198,0.1)',
-    paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, gap: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,74,198,0.1)',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    gap: 10,
   },
-  statusTextPending: { ...TYPOGRAPHY.body, color: COLORS.primary, fontWeight: '600' },
+  statusTextPending: {
+    ...TYPOGRAPHY.body,
+    color: COLORS.primary,
+    fontWeight: '600',
+  },
   statusBadgeAccepted: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,108,73,0.1)',
-    paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, gap: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,108,73,0.1)',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    gap: 10,
+    alignSelf: 'flex-start',
   },
-  statusTextAccepted: { ...TYPOGRAPHY.body, color: COLORS.secondary, fontWeight: '600' },
-  pulseDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: COLORS.secondary },
+  statusTextAccepted: {
+    ...TYPOGRAPHY.body,
+    color: COLORS.secondary,
+    fontWeight: '700',
+  },
+  pulseDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: COLORS.secondary,
+  },
   driverCard: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#ffffff',
-    borderWidth: 1, borderColor: COLORS.outlineVariant, borderRadius: ROUNDED.md,
-    padding: SPACING.md, marginBottom: SPACING.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: CANVAS.raised,
+    ...ELEVATION.sm,
+    borderRadius: ROUNDED.md,
+    padding: SPACING.md,
   },
-  driverAvatarBg: {
-    width: 56, height: 56, borderRadius: 16, backgroundColor: COLORS.surfaceContainerLow,
-    justifyContent: 'center', alignItems: 'center',
+  driverDetails: {
+    flex: 1,
+    marginLeft: SPACING.md,
   },
-  driverDetails: { flex: 1, marginLeft: SPACING.md },
-  driverName: { ...TYPOGRAPHY.sectionTitle, fontWeight: '700', color: COLORS.onSurface },
-  driverVehicle: { ...TYPOGRAPHY.caption, color: COLORS.onSurfaceVariant, marginTop: 2 },
-  actionButtons: { flexDirection: 'row', gap: SPACING.sm },
+  driverName: {
+    ...TYPOGRAPHY.sectionTitle,
+    fontWeight: '700',
+    color: COLORS.onSurface,
+  },
+  driverVehicle: {
+    ...TYPOGRAPHY.caption,
+    color: COLORS.onSurfaceVariant,
+    marginTop: 2,
+  },
+  actionButtons: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
+  },
   circularBtn: {
-    width: 44, height: 44, borderRadius: 12, borderWidth: 1, borderColor: COLORS.outlineVariant,
-    justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.surfaceContainerLowest,
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    ...BORDERS.strong,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: CANVAS.raised,
   },
-  tripInfo: { gap: SPACING.sm, marginBottom: SPACING.md },
-  tripInfoItem: { flexDirection: 'row', alignItems: 'center', gap: SPACING.sm },
-  tripInfoText: { ...TYPOGRAPHY.body, fontSize: 14, color: COLORS.onSurface, flex: 1 },
-  passengerText: { ...TYPOGRAPHY.caption, color: COLORS.onSurfaceVariant, marginLeft: 28 },
-  statusText: { ...TYPOGRAPHY.body, color: COLORS.onSurfaceVariant, textAlign: 'center' },
+  tripCard: {
+    backgroundColor: CANVAS.raised,
+    ...ELEVATION.sm,
+    borderRadius: ROUNDED.md,
+    padding: SPACING.md,
+  },
+  tripCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: SPACING.md,
+  },
+  tripCardTitle: {
+    ...TYPOGRAPHY.sectionTitle,
+    color: COLORS.onSurface,
+    fontWeight: '700',
+  },
+  routeDistanceBadge: {
+    backgroundColor: ACCENT.blueWash,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    ...BORDERS.accent,
+  },
+  routeDistanceBadgeText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: ACCENT.blueDeep,
+  },
+  tripInfo: {
+    gap: 0,
+  },
+  tripInfoItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.md,
+    paddingVertical: SPACING.sm,
+  },
+  tripIconBg: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  tripInfoTextWrap: {
+    flex: 1,
+  },
+  tripInfoLabel: {
+    ...TYPOGRAPHY.caption,
+    color: COLORS.onSurfaceVariant,
+  },
+  tripInfoText: {
+    ...TYPOGRAPHY.body,
+    fontSize: 14,
+    color: COLORS.onSurface,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  tripDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(15, 23, 42, 0.08)',
+    marginLeft: 52,
+  },
+  tripMetaRow: {
+    flexDirection: 'row',
+    gap: SPACING.md,
+    marginTop: SPACING.md,
+    paddingTop: SPACING.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(15, 23, 42, 0.08)',
+  },
+  tripMetaItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.xs,
+  },
+  tripMetaText: {
+    ...TYPOGRAPHY.caption,
+    color: COLORS.onSurfaceVariant,
+  },
+  statusText: {
+    ...TYPOGRAPHY.body,
+    color: COLORS.onSurfaceVariant,
+    textAlign: 'center',
+  },
+  // A destructive outline, not a filled block. Kept as a full-weight stroke
+  // because here the border carries the semantic weight of the action.
   btnCancel: {
-    flexDirection: 'row', height: 50, borderRadius: 12, borderWidth: 1, borderColor: COLORS.error,
-    justifyContent: 'center', alignItems: 'center', gap: SPACING.sm,
-    backgroundColor: COLORS.surfaceContainerLowest, marginTop: SPACING.sm,
+    flexDirection: 'row',
+    height: 50,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(186, 26, 26, 0.35)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: SPACING.sm,
+    backgroundColor: CANVAS.raised,
+    marginTop: 6,
   },
   btnCancelDisabled: {
     opacity: 0.6,
   },
-  btnCancelText: { ...TYPOGRAPHY.button, color: COLORS.error },
+  btnCancelText: {
+    ...TYPOGRAPHY.button,
+    color: COLORS.error,
+  },
 });

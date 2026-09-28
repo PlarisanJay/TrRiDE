@@ -1,18 +1,18 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, StyleSheet, Image, TouchableOpacity, ScrollView, ActivityIndicator, RefreshControl } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
-import { COLORS, TYPOGRAPHY, SPACING, ROUNDED, SHADOWS } from '../../theme';
+import { COLORS, TYPOGRAPHY, SPACING, ROUNDED } from '../../theme';
 import { getTripsByStudent } from '../../data/trips';
 
 const UPCOMING_STATUSES = ['pending', 'accepted', 'in_progress'];
 const COMPLETED_STATUSES = ['completed', 'cancelled'];
 
 const STATUS_CONFIG = {
-  pending: { label: 'Pending', color: COLORS.primary, bg: 'rgba(0,74,198,0.1)' },
-  accepted: { label: 'Accepted', color: COLORS.secondary, bg: 'rgba(0,108,73,0.1)' },
-  in_progress: { label: 'In Progress', color: COLORS.tertiary, bg: 'rgba(120,75,0,0.1)' },
-  completed: { label: 'Completed', color: COLORS.secondary, bg: 'rgba(0,108,73,0.1)' },
-  cancelled: { label: 'Cancelled', color: COLORS.error, bg: 'rgba(186,26,26,0.1)' },
+  pending: { label: 'Pending', color: COLORS.primary, bg: 'rgba(0,74,198,0.08)' },
+  accepted: { label: 'Accepted', color: COLORS.secondary, bg: 'rgba(0,108,73,0.08)' },
+  in_progress: { label: 'In Progress', color: '#b45309', bg: 'rgba(217,119,6,0.1)' },
+  completed: { label: 'Completed', color: '#006c49', bg: 'rgba(0,108,73,0.1)' },
+  cancelled: { label: 'Cancelled', color: '#dc2626', bg: 'rgba(220,38,38,0.08)' },
 };
 
 export default function MyOrdersScreen({ userProfile, onGoBack, onNavigate, onViewTrip }) {
@@ -63,14 +63,12 @@ export default function MyOrdersScreen({ userProfile, onGoBack, onNavigate, onVi
 
   return (
     <View style={styles.container}>
+      {/* Top Header */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <TouchableOpacity style={styles.headerIconBtn} onPress={onGoBack}>
-            <MaterialIcons name="arrow-back" size={24} color={COLORS.primary} />
-          </TouchableOpacity>
           <Text style={styles.headerTitle}>My Orders</Text>
         </View>
-        <TouchableOpacity style={styles.avatarBtn} onPress={() => onNavigate('Profile')}>
+        <TouchableOpacity style={styles.avatarBtn} onPress={() => onNavigate('Profile')} activeOpacity={0.8}>
           {userProfile?.avatar_url ? (
             <Image source={{ uri: userProfile.avatar_url }} style={styles.avatar} />
           ) : (
@@ -83,18 +81,18 @@ export default function MyOrdersScreen({ userProfile, onGoBack, onNavigate, onVi
         </TouchableOpacity>
       </View>
 
-      {/* Tabs */}
+      {/* Tabs (Clean Pill Toggle) */}
       <View style={styles.tabBar}>
         <TouchableOpacity
           style={[styles.tab, activeTab === 'upcoming' && styles.tabActive]}
-          activeOpacity={0.8}
+          activeOpacity={0.7}
           onPress={() => setActiveTab('upcoming')}
         >
           <Text style={[styles.tabText, activeTab === 'upcoming' && styles.tabTextActive]}>Upcoming</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.tab, activeTab === 'completed' && styles.tabActive]}
-          activeOpacity={0.8}
+          activeOpacity={0.7}
           onPress={() => setActiveTab('completed')}
         >
           <Text style={[styles.tabText, activeTab === 'completed' && styles.tabTextActive]}>Completed</Text>
@@ -115,7 +113,7 @@ export default function MyOrdersScreen({ userProfile, onGoBack, onNavigate, onVi
             <View style={styles.emptyState}>
               <MaterialIcons
                 name={activeTab === 'upcoming' ? 'directions-bus' : 'history'}
-                size={56}
+                size={48}
                 color={COLORS.outlineVariant}
               />
               <Text style={styles.emptyTitle}>
@@ -133,41 +131,61 @@ export default function MyOrdersScreen({ userProfile, onGoBack, onNavigate, onVi
               return (
                 <TouchableOpacity
                   key={trip.id}
-                  style={[styles.tripCard, SHADOWS.diffusion]}
-                  activeOpacity={0.8}
+                  style={styles.orderCard}
+                  activeOpacity={0.7}
                   onPress={() => onViewTrip(trip.id)}
                 >
-                  <View style={styles.tripHeader}>
-                    <View style={styles.tripRoute}>
-                      <View style={styles.routeDots}>
-                        <View style={[styles.routeDot, { backgroundColor: COLORS.primary }]} />
-                        <View style={styles.routeLine} />
-                        <View style={[styles.routeDot, { backgroundColor: COLORS.error, borderWidth: 0 }]} />
-                      </View>
-                      <View style={styles.routeTexts}>
-                        <Text style={styles.routeText} numberOfLines={1}>{trip.pickup_text || 'Pickup'}</Text>
-                        <Text style={styles.routeText} numberOfLines={1}>{trip.dest_text || 'Destination'}</Text>
-                      </View>
-                    </View>
-                    <View style={[styles.statusBadge, { backgroundColor: statusCfg.bg }]}>
-                      <Text style={[styles.statusBadgeText, { color: statusCfg.color }]}>{statusCfg.label}</Text>
-                    </View>
+                  {/* Left: Icon Badge styled like message avatar */}
+                  <View style={[styles.orderIconWrapper, { backgroundColor: statusCfg.bg }]}>
+                    <MaterialIcons
+                      name={
+                        trip.status === 'completed'
+                          ? 'task-alt'
+                          : trip.status === 'cancelled'
+                          ? 'cancel'
+                          : trip.status === 'in_progress'
+                          ? 'near-me'
+                          : 'navigation'
+                      }
+                      size={22}
+                      color={statusCfg.color}
+                    />
                   </View>
 
-                  <View style={styles.tripMeta}>
-                    <View style={styles.tripMetaItem}>
-                      <MaterialIcons name="people" size={14} color={COLORS.onSurfaceVariant} />
-                      <Text style={styles.tripMetaText}>
-                        {trip.passengers} passenger{trip.passengers > 1 ? 's' : ''}
+                  {/* Middle: Details */}
+                  <View style={styles.orderDetails}>
+                    <View style={styles.orderTitleRow}>
+                      <Text style={styles.orderTitle} numberOfLines={1}>
+                        {trip.dest_text || 'Destination'}
                       </Text>
+                      <View style={[styles.statusBadge, { backgroundColor: statusCfg.bg }]}>
+                        <Text style={[styles.statusBadgeText, { color: statusCfg.color }]}>
+                          {statusCfg.label}
+                        </Text>
+                      </View>
                     </View>
-                    <View style={styles.tripMetaItem}>
-                      <MaterialIcons name="schedule" size={14} color={COLORS.onSurfaceVariant} />
-                      <Text style={styles.tripMetaText}>{formatDate(trip.created_at)}</Text>
+
+                    <Text style={styles.orderPickup} numberOfLines={1}>
+                      From: {trip.pickup_text || 'Pickup point'}
+                    </Text>
+
+                    <View style={styles.orderMetaRow}>
+                      <View style={styles.orderMetaItem}>
+                        <MaterialIcons name="people-outline" size={13} color="#64748b" />
+                        <Text style={styles.orderMetaText}>
+                          {trip.passengers} pass{trip.passengers > 1 ? 'engers' : 'enger'}
+                        </Text>
+                      </View>
+                      <Text style={styles.orderMetaDot}>•</Text>
+                      <View style={styles.orderMetaItem}>
+                        <MaterialIcons name="schedule" size={13} color="#64748b" />
+                        <Text style={styles.orderMetaText}>{formatDate(trip.created_at)}</Text>
+                      </View>
                     </View>
                   </View>
 
-                  <MaterialIcons name="chevron-right" size={20} color={COLORS.outlineVariant} style={styles.chevron} />
+                  {/* Right: Subtle, vertically centered chevron */}
+                  <MaterialIcons name="chevron-right" size={20} color="#cbd5e1" style={styles.cardChevron} />
                 </TouchableOpacity>
               );
             })
@@ -181,7 +199,7 @@ export default function MyOrdersScreen({ userProfile, onGoBack, onNavigate, onVi
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: '#ffffff',
   },
   centered: {
     flex: 1,
@@ -192,9 +210,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     height: 60,
     paddingTop: 8,
-    backgroundColor: COLORS.surface,
+    backgroundColor: '#ffffff',
     borderBottomWidth: 1,
-    borderBottomColor: COLORS.outlineVariant,
+    borderBottomColor: 'rgba(226, 232, 240, 0.7)',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: SPACING.marginMobile,
@@ -202,20 +220,17 @@ const styles = StyleSheet.create({
   headerLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: SPACING.sm,
-  },
-  headerIconBtn: {
-    padding: SPACING.xs,
   },
   headerTitle: {
-    ...TYPOGRAPHY.sectionTitle,
-    color: COLORS.primary,
+    fontSize: 22,
     fontWeight: '800',
+    color: '#004ac6',
+    letterSpacing: -0.3,
   },
   avatarBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     overflow: 'hidden',
   },
   avatar: {
@@ -223,137 +238,142 @@ const styles = StyleSheet.create({
     height: '100%',
   },
   avatarDefault: {
-    borderRadius: 20,
+    borderRadius: 19,
     backgroundColor: COLORS.primaryContainer,
     justifyContent: 'center',
     alignItems: 'center',
   },
   avatarInitials: {
-    ...TYPOGRAPHY.button,
+    fontSize: 15,
     color: '#ffffff',
     fontWeight: '700',
   },
   tabBar: {
     flexDirection: 'row',
-    paddingHorizontal: SPACING.marginMobile,
-    paddingTop: SPACING.md,
-    gap: SPACING.sm,
+    marginHorizontal: SPACING.marginMobile,
+    marginTop: 14,
+    marginBottom: 6,
+    backgroundColor: '#f1f5f9',
+    borderRadius: 12,
+    padding: 4,
   },
   tab: {
     flex: 1,
-    paddingVertical: 10,
-    borderRadius: ROUNDED.md,
-    borderWidth: 1,
-    borderColor: COLORS.outlineVariant,
+    paddingVertical: 9,
+    borderRadius: 9,
     alignItems: 'center',
-    backgroundColor: '#ffffff',
+    justifyContent: 'center',
   },
   tabActive: {
-    backgroundColor: COLORS.primaryContainer,
-    borderColor: COLORS.primaryContainer,
+    backgroundColor: '#ffffff',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 2,
+    elevation: 2,
   },
   tabText: {
-    ...TYPOGRAPHY.button,
-    color: COLORS.onSurfaceVariant,
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#64748b',
   },
   tabTextActive: {
-    color: '#ffffff',
+    color: '#004ac6',
+    fontWeight: '700',
   },
   listContent: {
-    padding: SPACING.marginMobile,
-    gap: SPACING.sm,
-    paddingBottom: 40,
+    paddingHorizontal: SPACING.marginMobile,
+    paddingTop: 10,
+    paddingBottom: 95,
   },
-  tripCard: {
-    backgroundColor: '#ffffff',
-    borderWidth: 1,
-    borderColor: COLORS.outlineVariant,
-    borderRadius: ROUNDED.md,
-    padding: SPACING.md,
-    position: 'relative',
-  },
-  tripHeader: {
+  orderCard: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  tripRoute: {
-    flexDirection: 'row',
-    flex: 1,
-    gap: SPACING.sm,
-    marginRight: SPACING.sm,
-  },
-  routeDots: {
     alignItems: 'center',
-    paddingTop: 4,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(226, 232, 240, 0.7)',
   },
-  routeDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+  orderIconWrapper: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
   },
-  routeLine: {
-    width: 1,
-    height: 20,
-    backgroundColor: COLORS.outlineVariant,
-    marginVertical: 2,
-  },
-  routeTexts: {
+  orderDetails: {
     flex: 1,
-    gap: 6,
+    justifyContent: 'center',
   },
-  routeText: {
-    ...TYPOGRAPHY.body,
-    fontSize: 14,
-    color: COLORS.onSurface,
+  orderTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 6,
+    marginBottom: 3,
+  },
+  orderTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#0f172a',
+    flex: 1,
+  },
+  orderPickup: {
+    fontSize: 13,
+    fontWeight: '400',
+    color: '#64748b',
+    marginBottom: 5,
+  },
+  orderMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  orderMetaItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  orderMetaText: {
+    fontSize: 12,
     fontWeight: '500',
+    color: '#64748b',
+  },
+  orderMetaDot: {
+    fontSize: 12,
+    color: '#cbd5e1',
+  },
+  cardChevron: {
+    marginLeft: 8,
   },
   statusBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
   },
   statusBadgeText: {
-    ...TYPOGRAPHY.caption,
-    fontWeight: '600',
-  },
-  tripMeta: {
-    flexDirection: 'row',
-    gap: SPACING.md,
-    marginTop: SPACING.md,
-    paddingTop: SPACING.sm,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.outlineVariant,
-  },
-  tripMetaItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  tripMetaText: {
-    ...TYPOGRAPHY.caption,
-    color: COLORS.onSurfaceVariant,
-  },
-  chevron: {
-    position: 'absolute',
-    right: SPACING.md,
-    bottom: SPACING.md,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.1,
   },
   emptyState: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingTop: 80,
-    gap: SPACING.sm,
+    paddingTop: 70,
+    gap: 8,
   },
   emptyTitle: {
-    ...TYPOGRAPHY.sectionTitle,
-    color: COLORS.onSurfaceVariant,
-    fontWeight: '600',
+    fontSize: 17,
+    color: '#475569',
+    fontWeight: '700',
   },
   emptySubtitle: {
-    ...TYPOGRAPHY.body,
-    color: COLORS.outline,
+    fontSize: 14,
+    color: '#94a3b8',
     textAlign: 'center',
-    paddingHorizontal: 40,
+    paddingHorizontal: 30,
   },
 });

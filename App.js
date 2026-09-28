@@ -1,5 +1,15 @@
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, StatusBar, View, ActivityIndicator } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  StyleSheet,
+  StatusBar,
+  View,
+  ActivityIndicator,
+  Animated,
+  AppState,
+  Platform,
+  BackHandler,
+  ToastAndroid,
+} from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import SplashScreen from './screens/auth/SplashScreen';
 import LoginScreen from './screens/auth/LoginScreen';
@@ -12,11 +22,20 @@ import BookingConfirmedScreen from './screens/student/BookingConfirmedScreen';
 import MyOrdersScreen from './screens/student/MyOrdersScreen';
 import DriverDashboardScreen from './screens/driver/DriverDashboardScreen';
 import CurrentTripScreen from './screens/driver/CurrentTripScreen';
+import DriverCompletedRidesScreen from './screens/driver/DriverCompletedRidesScreen';
+import DriverTripsScreen from './screens/driver/DriverTripsScreen';
 import AdminDashboardScreen from './screens/admin/AdminDashboardScreen';
 import MessagesScreen from './screens/shared/MessagesScreen';
 import ProfileScreen from './screens/shared/ProfileScreen';
+import SettingsScreen from './screens/shared/SettingsScreen';
+import BottomNavBar from './components/BottomNavBar';
 import { COLORS } from './theme';
-import { getCurrentSession, getCurrentProfile, signOut } from './data/auth';
+import { getCurrentSession, getCurrentProfile, signOut, setDriverOnlineStatus } from './data/auth';
+import { supabase } from './config/supabase';
+import { subscribeToAllUserMessages, getUnreadMessagesCount } from './data/messages';
+import { getActiveTrip, clearActiveTrip } from './data/activeTripStore';
+import { registerForPushNotifications } from './data/pushNotifications';
+import { getTripsByStudent } from './data/trips';
 
 const getDashboardForRole = (role) => {
   if (role === 'admin') return 'AdminDashboard';
@@ -31,35 +50,232 @@ export default function App() {
   const [screenHistory, setScreenHistory] = useState([]);
   const [initializing, setInitializing] = useState(true);
   const [activeTripId, setActiveTripId] = useState(null);
+  const [chatTripId, setChatTripId] = useState(null);
+  const [isInChat, setIsInChat] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [driverOnline, setDriverOnline] = useState(false);
+
+  const fadeAnim = useRef(new Animated.Value(1)).current;
+  const slideAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    fadeAnim.setValue(0.55);
+    slideAnim.setValue(4);
+    Animated.parallel([
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 120,
+        useNativeDriver: Platform.OS !== 'web',
+      }),
+      Animated.timing(slideAnim, {
+        toValue: 0,
+        duration: 120,
+        useNativeDriver: Platform.OS !== 'web',
+      }),
+    ]).start();
+  }, [currentScreen]);
+
+  const userProfileRef = useRef(userProfile);
+  userProfileRef.current = userProfile;
+  const currentScreenRef = useRef(currentScreen);
+  currentScreenRef.current = currentScreen;
 
   // Check for existing session on mount
   useEffect(() => {
+    let isMounted = true;
+    const fallbackTimer = setTimeout(() => {
+      if (isMounted) {
+        if (Platform.OS === 'web') {
+          setCurrentScreen((prev) => (prev === 'Splash' ? 'Login' : prev));
+        }
+        setInitializing(false);
+      }
+    }, 2500);
+
     const restoreSession = async () => {
       try {
         const session = await getCurrentSession();
-        if (session) {
+        if (session && isMounted) {
           const profile = await getCurrentProfile();
-          if (profile && profile.status === 'approved') {
+          if (profile && profile.status === 'approved' && isMounted) {
             setUserRole(profile.role);
             setUserProfile(profile);
+            if (profile.role === 'driver') {
+              setDriverOnline(true);
+            }
             setCurrentScreen(getDashboardForRole(profile.role));
+            clearTimeout(fallbackTimer);
             setInitializing(false);
+
+            // Asynchronously restore active trips and push notifications without blocking initial render
+            if (profile.role === 'driver') {
+              getActiveTrip(profile.id)
+                .then(async (stored) => {
+                  if (stored && (stored.status === 'accepted' || stored.status === 'in_progress')) {
+                    setActiveTripId(stored.id);
+                  } else {
+                    await clearActiveTrip().catch(() => {});
+                  }
+                })
+                .catch(() => {});
+            }
+
+            if (profile.role === 'student') {
+              getTripsByStudent(profile.id)
+                .then((trips) => {
+                  const activeStudentTrip = (trips || []).find(
+                    (t) => t.status === 'pending' || t.status === 'accepted' || t.status === 'in_progress'
+                  );
+                  if (activeStudentTrip) {
+                    setActiveTripId(activeStudentTrip.id);
+                  }
+                })
+                .catch(() => {});
+            }
+
+            registerForPushNotifications(profile.id).catch(() => {});
             return;
           }
         }
       } catch (e) {
-        // No valid session, continue to splash
+        // No valid session
       }
-      setInitializing(false);
+
+      if (isMounted) {
+        clearTimeout(fallbackTimer);
+        // On web, navigate straight to Login if not logged in to eliminate delay
+        if (Platform.OS === 'web') {
+          setCurrentScreen('Login');
+        }
+        setInitializing(false);
+      }
     };
+
     restoreSession();
+    return () => {
+      isMounted = false;
+      clearTimeout(fallbackTimer);
+    };
   }, []);
 
-  const navigateTo = (screen) => {
+  // Listen for auth state changes (token refreshed, signed out, etc.)
+  // Decoupled from currentScreen to avoid tearing down subscriptions on every navigation
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_OUT' || !session) {
+        if (userProfileRef.current) {
+          setUserRole(null);
+          setUserProfile(null);
+          setScreenHistory([]);
+          setDriverOnline(false);
+          setCurrentScreen('Login');
+        }
+        return;
+      }
+
+      if (event === 'TOKEN_REFRESHED' || event === 'SIGNED_IN') {
+        try {
+          const profile = await getCurrentProfile();
+          if (profile && profile.status === 'approved') {
+            if (!userProfileRef.current || userProfileRef.current.id !== profile.id) {
+              setUserRole(profile.role);
+              setUserProfile(profile);
+              if (profile.role === 'driver') {
+                setDriverOnline(true);
+              }
+              if (currentScreenRef.current === 'Login' || currentScreenRef.current === 'Splash') {
+                setCurrentScreen(getDashboardForRole(profile.role));
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('Auth state change profile fetch error:', e.message);
+        }
+      }
+    });
+
+    return () => {
+      subscription?.unsubscribe();
+    };
+  }, []);
+
+  const applyDriverOnline = (online) => {
+    setDriverOnline(online);
+    if (userProfile?.id) {
+      setDriverOnlineStatus(userProfile.id, online).catch(() => {});
+    }
+  };
+
+  // Auto online/offline for drivers: online while the app is open/foreground,
+  // offline when it goes to the background or closes.
+  useEffect(() => {
+    if (!userProfile || userProfile.role !== 'driver') {
+      setDriverOnline(false);
+      return undefined;
+    }
+    applyDriverOnline(true);
+    const sub = AppState.addEventListener('change', (nextState) => {
+      const online = nextState === 'active';
+      applyDriverOnline(online);
+    });
+    return () => sub.remove();
+  }, [userProfile?.id, userProfile?.role]);
+
+  // Real-time unread messages listener for notification badges
+  useEffect(() => {
+    if (!userProfile?.id) {
+      setUnreadCount(0);
+      return;
+    }
+
+    let isMounted = true;
+    const fetchUnread = async () => {
+      const count = await getUnreadMessagesCount(userProfile.id, userRole);
+      if (isMounted) setUnreadCount(count);
+    };
+
+    fetchUnread();
+
+    const unsub = subscribeToAllUserMessages(userProfile.id, () => {
+      fetchUnread();
+    });
+
+    // 4-second polling fallback for instant badge updates on mobile
+    const pollInterval = setInterval(fetchUnread, 4000);
+
+    return () => {
+      isMounted = false;
+      unsub();
+      clearInterval(pollInterval);
+    };
+  }, [userProfile?.id, userRole]);
+
+  // Refresh unread count when viewing or leaving messages
+  useEffect(() => {
+    if (userProfile?.id && currentScreen === 'Messages') {
+      getUnreadMessagesCount(userProfile.id, userRole).then((count) => {
+        setUnreadCount(count);
+      });
+    }
+  }, [currentScreen, isInChat, userProfile?.id, userRole]);
+
+  const navigateTo = (screen, params = null) => {
     if (screen === 'Home') {
       setCurrentScreen(getDashboardForRole(userRole));
       setScreenHistory([]);
+      setChatTripId(null);
       return;
+    }
+    if (screen === 'Messages') {
+      if (typeof params === 'string') {
+        setChatTripId(params);
+      } else if (params?.tripId) {
+        setChatTripId(params.tripId);
+      } else {
+        setChatTripId(null);
+      }
+    } else {
+      setChatTripId(null);
     }
     setScreenHistory((prev) => [...prev, currentScreen]);
     setCurrentScreen(screen);
@@ -75,14 +291,88 @@ export default function App() {
     }
   };
 
+  // Hardware Android back button handling
+  const lastBackPressRef = useRef(0);
+  useEffect(() => {
+    const handleHardwareBackPress = () => {
+      // 1. If inside an open chat conversation, let MessagesScreen handle it
+      if (currentScreen === 'Messages' && isInChat) {
+        return false;
+      }
+
+      // 2. If on Register screen, navigate back to Login
+      if (currentScreen === 'Register') {
+        navigateTo('Login');
+        return true;
+      }
+
+      // 3. If there is screen navigation history, go back to previous screen
+      if (screenHistory.length > 0) {
+        goBack();
+        return true;
+      }
+
+      // 4. If on any sub-screen without prior history, navigate back to Home dashboard
+      const isSubScreen = [
+        'BookRide',
+        'BookingConfirmed',
+        'TrackDriver',
+        'OrderDetails',
+        'MyOrders',
+        'Profile',
+        'Settings',
+        'DriverTrips',
+        'CurrentTrip',
+        'DriverCompletedRides',
+        'Messages',
+      ].includes(currentScreen);
+
+      if (isSubScreen && userRole) {
+        navigateTo('Home');
+        return true;
+      }
+
+      // 5. If on root screens (Dashboard or Login), require double-tap back to exit
+      const isRootScreen = ['StudentDashboard', 'DriverDashboard', 'AdminDashboard', 'Login'].includes(currentScreen);
+      if (isRootScreen) {
+        const now = Date.now();
+        if (now - lastBackPressRef.current < 2000) {
+          BackHandler.exitApp();
+          return true;
+        }
+        lastBackPressRef.current = now;
+        if (Platform.OS === 'android') {
+          ToastAndroid.show('Press back again to exit', ToastAndroid.SHORT);
+        }
+        return true;
+      }
+
+      return false;
+    };
+
+    const backSub = BackHandler.addEventListener('hardwareBackPress', handleHardwareBackPress);
+    return () => backSub.remove();
+  }, [currentScreen, screenHistory, userRole, isInChat]);
+
   const handleLoginSuccess = (role, profile) => {
     setUserRole(role);
     setUserProfile(profile);
     setScreenHistory([]);
+    setDriverOnline(role === 'driver');
+    if (role === 'driver' && profile?.id) {
+      setDriverOnlineStatus(profile.id, true).catch(() => {});
+    }
+    // Register push notification token on login
+    if (profile?.id) {
+      registerForPushNotifications(profile.id).catch(() => {});
+    }
     setCurrentScreen(getDashboardForRole(role));
   };
 
   const handleLogout = async () => {
+    if (userProfile?.role === 'driver' && userProfile?.id) {
+      setDriverOnlineStatus(userProfile.id, false).catch(() => {});
+    }
     try {
       await signOut();
     } catch (e) {
@@ -91,6 +381,7 @@ export default function App() {
     setUserRole(null);
     setUserProfile(null);
     setScreenHistory([]);
+    setDriverOnline(false);
     setCurrentScreen('Login');
   };
 
@@ -107,13 +398,28 @@ export default function App() {
   }
 
   if (currentScreen === 'AdminDashboard') {
+    // Gate on the live role. Without this, the screen can be re-entered with
+    // no session: onBack pushed 'AdminDashboard' onto screenHistory, so the
+    // hardware back button on Login popped straight back into it.
+    if (userProfile?.role !== 'admin') {
+      setUserRole(null);
+      setUserProfile(null);
+      setScreenHistory([]);
+      setCurrentScreen('Login');
+      return null;
+    }
+
     return (
       <SafeAreaProvider>
         <View style={styles.container}>
           <StatusBar barStyle="dark-content" backgroundColor={COLORS.surface} />
           <AdminDashboardScreen
             userProfile={userProfile}
-            onBack={() => navigateTo('Login')}
+            onBack={() => {
+              // Clear history so the back button cannot re-enter this screen.
+              setScreenHistory([]);
+              setCurrentScreen('Login');
+            }}
             onLogout={handleLogout}
           />
         </View>
@@ -125,124 +431,201 @@ export default function App() {
     <SafeAreaProvider>
       <SafeAreaView style={styles.container}>
         <StatusBar barStyle="dark-content" backgroundColor={COLORS.surface} />
+        <Animated.View
+          style={[
+            styles.container,
+            {
+              opacity: fadeAnim,
+              ...(Platform.OS === 'ios' ? { transform: [{ translateY: slideAnim }] } : {}),
+            },
+          ]}
+        >
+          {currentScreen === 'Splash' && (
+            <SplashScreen onFinish={() => navigateTo('Login')} />
+          )}
 
-      {currentScreen === 'Splash' && (
-        <SplashScreen onFinish={() => navigateTo('Login')} />
-      )}
+          {currentScreen === 'Login' && (
+            <LoginScreen
+              onLoginSuccess={handleLoginSuccess}
+              onSignUp={() => navigateTo('Register')}
+            />
+          )}
 
-      {currentScreen === 'Login' && (
-        <LoginScreen
-          onLoginSuccess={handleLoginSuccess}
-          onSignUp={() => navigateTo('Register')}
-        />
-      )}
+          {currentScreen === 'Register' && (
+            <RegisterScreen
+              onLogin={() => navigateTo('Login')}
+            />
+          )}
 
-      {currentScreen === 'Register' && (
-        <RegisterScreen
-          onLogin={() => navigateTo('Login')}
-        />
-      )}
+          {currentScreen === 'StudentDashboard' && (
+            <StudentDashboardScreen
+              userProfile={userProfile}
+              onNavigate={(target, params) => navigateTo(target, params)}
+              onBookRide={() => navigateTo('BookRide')}
+              activeTripId={activeTripId}
+              onViewTrip={(tripId) => {
+                setActiveTripId(tripId);
+                navigateTo('OrderDetails');
+              }}
+              onCancelTrip={() => {
+                setActiveTripId(null);
+              }}
+            />
+          )}
 
-      {currentScreen === 'StudentDashboard' && (
-        <StudentDashboardScreen
-          userProfile={userProfile}
-          onNavigate={(target) => navigateTo(target)}
-          onBookRide={() => navigateTo('BookRide')}
-          activeTripId={activeTripId}
-          onViewTrip={(tripId) => {
-            setActiveTripId(tripId);
-            navigateTo('OrderDetails');
-          }}
-          onCancelTrip={() => {
-            setActiveTripId(null);
-          }}
-        />
-      )}
+          {currentScreen === 'BookRide' && (
+            <BookRideScreen
+              userProfile={userProfile}
+              onConfirmBooking={(tripId) => {
+                setActiveTripId(tripId);
+                navigateTo('BookingConfirmed');
+              }}
+              onNavigate={(target, params) => navigateTo(target, params)}
+            />
+          )}
 
-      {currentScreen === 'BookRide' && (
-        <BookRideScreen
-          userProfile={userProfile}
-          onConfirmBooking={(tripId) => {
-            setActiveTripId(tripId);
-            navigateTo('BookingConfirmed');
-          }}
-          onNavigate={(target) => navigateTo(target)}
-        />
-      )}
+          {currentScreen === 'BookingConfirmed' && (
+            <BookingConfirmedScreen
+              onContinue={() => navigateTo('Home')}
+            />
+          )}
 
-      {currentScreen === 'BookingConfirmed' && (
-        <BookingConfirmedScreen
-          onContinue={() => navigateTo('Home')}
-        />
-      )}
+          {currentScreen === 'TrackDriver' && (
+            <TrackDriverScreen
+              userProfile={userProfile}
+              tripId={activeTripId}
+              onCancelTrip={() => { setActiveTripId(null); navigateTo('StudentDashboard'); }}
+              onNavigate={(target, params) => navigateTo(target, params)}
+            />
+          )}
 
-      {currentScreen === 'TrackDriver' && (
-        <TrackDriverScreen
-          userProfile={userProfile}
-          tripId={activeTripId}
-          onCancelTrip={() => navigateTo('StudentDashboard')}
-          onNavigate={(target) => navigateTo(target)}
-        />
-      )}
+          {currentScreen === 'OrderDetails' && (
+            <OrderDetailsScreen
+              userProfile={userProfile}
+              tripId={activeTripId}
+              onGoBack={() => navigateTo('StudentDashboard')}
+              onNavigate={(target, params) => navigateTo(target, params)}
+            />
+          )}
 
-      {currentScreen === 'OrderDetails' && (
-        <OrderDetailsScreen
-          userProfile={userProfile}
-          tripId={activeTripId}
-          onGoBack={() => navigateTo('StudentDashboard')}
-          onNavigate={(target) => navigateTo(target)}
-        />
-      )}
+          {currentScreen === 'MyOrders' && (
+            <MyOrdersScreen
+              userProfile={userProfile}
+              onGoBack={() => navigateTo('StudentDashboard')}
+              onNavigate={(target) => navigateTo(target)}
+              onViewTrip={(tripId) => {
+                setActiveTripId(tripId);
+                navigateTo('OrderDetails');
+              }}
+            />
+          )}
 
-      {currentScreen === 'MyOrders' && (
-        <MyOrdersScreen
-          userProfile={userProfile}
-          onGoBack={() => navigateTo('StudentDashboard')}
-          onNavigate={(target) => navigateTo(target)}
-          onViewTrip={(tripId) => {
-            setActiveTripId(tripId);
-            navigateTo('OrderDetails');
-          }}
-        />
-      )}
+          {currentScreen === 'DriverDashboard' && (
+            <DriverDashboardScreen
+              userProfile={userProfile}
+              activeTripId={activeTripId}
+              isOnline={driverOnline}
+              onAcceptRide={(tripId) => {
+                setActiveTripId(tripId);
+                navigateTo('CurrentTrip');
+              }}
+              onNavigate={(target) => navigateTo(target)}
+            />
+          )}
 
-      {currentScreen === 'DriverDashboard' && (
-        <DriverDashboardScreen
-          userProfile={userProfile}
-          onAcceptRide={(tripId) => {
-            setActiveTripId(tripId);
-            navigateTo('CurrentTrip');
-          }}
-          onNavigate={(target) => navigateTo(target)}
-        />
-      )}
+          {currentScreen === 'DriverCompletedRides' && (
+            <DriverCompletedRidesScreen
+              userProfile={userProfile}
+              onBack={goBack}
+            />
+          )}
 
-      {currentScreen === 'CurrentTrip' && (
-        <CurrentTripScreen
-          userProfile={userProfile}
-          tripId={activeTripId}
-          onTripCompleted={() => navigateTo('DriverDashboard')}
-          onCancelTrip={() => navigateTo('DriverDashboard')}
-          onNavigate={(target) => navigateTo(target)}
-        />
-      )}
+          {currentScreen === 'DriverTrips' && (
+            <DriverTripsScreen
+              userProfile={userProfile}
+              activeTripId={activeTripId}
+              onBack={goBack}
+              onResumeTrip={(tripId) => {
+                setActiveTripId(tripId);
+                navigateTo('CurrentTrip');
+              }}
+            />
+          )}
 
-      {currentScreen === 'Messages' && (
-        <MessagesScreen
-          userRole={userRole}
-          userProfile={userProfile}
-          onBack={goBack}
-        />
-      )}
+          {currentScreen === 'CurrentTrip' && (
+            <CurrentTripScreen
+              userProfile={userProfile}
+              tripId={activeTripId}
+              onTripCompleted={() => {
+                clearActiveTrip();
+                setActiveTripId(null);
+                navigateTo('DriverDashboard');
+              }}
+              onCancelTrip={() => {
+                clearActiveTrip();
+                setActiveTripId(null);
+                navigateTo('DriverDashboard');
+              }}
+              onNavigate={(target, params) => navigateTo(target, params)}
+            />
+          )}
 
-      {currentScreen === 'Profile' && (
-        <ProfileScreen
-          userRole={userRole}
-          userProfile={userProfile}
-          onLogout={handleLogout}
-          onBack={goBack}
-        />
-      )}
+          {currentScreen === 'Messages' && (
+            <MessagesScreen
+              userRole={userRole}
+              userProfile={userProfile}
+              tripId={chatTripId}
+              onBack={() => {
+                setChatTripId(null);
+                goBack();
+              }}
+              onChatOpen={() => setIsInChat(true)}
+              onChatClose={() => {
+                setIsInChat(false);
+                setChatTripId(null);
+              }}
+              onMessagesRead={() => {
+                if (userProfile?.id) {
+                  getUnreadMessagesCount(userProfile.id, userRole).then((count) => {
+                    setUnreadCount(count);
+                  });
+                }
+              }}
+            />
+          )}
+
+          {currentScreen === 'Profile' && (
+            <ProfileScreen
+              userRole={userRole}
+              userProfile={userProfile}
+              onLogout={handleLogout}
+              onBack={goBack}
+              onNavigate={(target) => navigateTo(target)}
+              onProfileUpdated={(updated) => setUserProfile(updated)}
+            />
+          )}
+
+          {currentScreen === 'Settings' && (
+            <SettingsScreen
+              userProfile={userProfile}
+              onBack={goBack}
+            />
+          )}
+
+          {/* Persistent Bottom Navigation Bar for Main Tab Screens.
+              'Profile' is deliberately excluded: it is reached from the Profile
+              tab, but the screen itself shows only its own back button. */}
+          {['StudentDashboard', 'DriverDashboard', 'MyOrders', 'Messages', 'Settings'].includes(currentScreen) && !(currentScreen === 'Messages' && isInChat) && (
+            <BottomNavBar
+              userRole={userRole}
+              currentScreen={currentScreen}
+              onNavigate={(target) => navigateTo(target)}
+              onBookRide={() => navigateTo('BookRide')}
+              unreadMessagesCount={unreadCount}
+              hasUnreadMessages={unreadCount > 0}
+            />
+          )}
+        </Animated.View>
       </SafeAreaView>
     </SafeAreaProvider>
   );

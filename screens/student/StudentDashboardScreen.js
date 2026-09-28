@@ -1,18 +1,157 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, ScrollView, ActivityIndicator, Modal } from 'react-native';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator, Modal, Animated, Platform } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
-import { COLORS, TYPOGRAPHY, SPACING, ROUNDED, SHADOWS } from '../../theme';
-import { getTripById, subscribeToTrip } from '../../data/trips';
+import { LinearGradient } from 'expo-linear-gradient';
+import { COLORS, TYPOGRAPHY, SPACING, ROUNDED, ELEVATION, GRADIENTS, INK, CANVAS, ACCENT, BORDERS } from '../../theme';
+import { getTripById, subscribeToTrip, getTripsByStudent, cancelTripWithReason } from '../../data/trips';
 import { getProfileById } from '../../data/auth';
+import { getDriverAvailability } from '../../data/trips';
+import { TripBannerSkeleton } from '../../components/SkeletonLoader';
+import DriverStatusChip from '../../components/DriverStatusChip';
+import TriRideTextLogo from '../../components/TriRideTextLogo';
+import { sendLocalNotification } from '../../data/pushNotifications';
+import UserAvatar from '../../components/UserAvatar';
+import CancelRideModal from '../../components/CancelRideModal';
+import { haversineDistance, formatDistanceText, formatDurationText } from '../../config/mapConfig';
+
+// Nav tab definitions for the student dashboard
+const NAV_TABS = [
+  { key: 'Home', icon: 'home', label: 'Home' },
+  { key: 'MyOrders', icon: 'receipt-long', label: 'Orders' },
+  { key: 'Messages', icon: 'chat', label: 'Messages' },
+  { key: 'Profile', icon: 'person', label: 'Profile' },
+];
 
 export default function StudentDashboardScreen({ userProfile, onNavigate, onBookRide, activeTripId, onViewTrip, onCancelTrip }) {
   const [activeTrip, setActiveTrip] = useState(null);
   const [activeDriver, setActiveDriver] = useState(null);
   const [tripLoading, setTripLoading] = useState(false);
   const [showAcceptPopup, setShowAcceptPopup] = useState(false);
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [activeTab, setActiveTab] = useState('Home');
+  const [availability, setAvailability] = useState({ total: 0, online: 0, onTrip: 0, available: 0 });
+  const [recentTrips, setRecentTrips] = useState([]);
   const activeDriverRef = useRef(null);
   const profileFetchFailed = useRef(false);
   const prevStatusRef = useRef(null);
+
+  // Load live driver availability (poll every 10s) and tick the count on change
+  const liveDotScale = useRef(new Animated.Value(1)).current;
+  const onlineCountTick = useRef(new Animated.Value(1)).current;
+  const prevOnlineRef = useRef(null);
+
+  // The dot dimmed as it grows, so it stops reading as a hard flash. At the
+  // old 1.5 peak the 7px dot grew past its own 12px halo and the "radar"
+  // effect was lost.
+  const liveDotFade = useMemo(() => liveDotScale.interpolate({
+    inputRange: [1, 1.22],
+    outputRange: [1, 0.55],
+    extrapolate: 'clamp',
+  }), [liveDotScale]);
+
+  // The count ticks up from below rather than the card scaling. Scaling a
+  // view that contains text forces a re-rasterise, which made the 44px figure
+  // and its label visibly shimmer on Android.
+  const countTickStyle = useMemo(() => ({
+    opacity: onlineCountTick,
+    transform: [{
+      translateY: onlineCountTick.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }),
+    }],
+  }), [onlineCountTick]);
+
+  useEffect(() => {
+    let mounted = true;
+    async function loadAvailability() {
+      try {
+        const avail = await getDriverAvailability();
+        if (!mounted) return;
+        setAvailability(avail);
+        if (prevOnlineRef.current !== null && prevOnlineRef.current !== avail.online) {
+          onlineCountTick.setValue(0);
+          Animated.timing(onlineCountTick, {
+            toValue: 1,
+            duration: 260,
+            useNativeDriver: Platform.OS !== 'web',
+          }).start();
+        }
+        prevOnlineRef.current = avail.online;
+      } catch (e) {
+        console.warn('Could not load driver availability:', e.message);
+      }
+    }
+    loadAvailability();
+    const timer = setInterval(loadAvailability, 10000);
+    return () => { mounted = false; clearInterval(timer); };
+  }, []);
+
+  // Continuous pulse for the LIVE dot
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(liveDotScale, { toValue: 1.22, duration: 700, useNativeDriver: Platform.OS !== 'web' }),
+        Animated.timing(liveDotScale, { toValue: 1, duration: 700, useNativeDriver: Platform.OS !== 'web' }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, []);
+
+  // Load real recent trips
+  useEffect(() => {
+    let mounted = true;
+    async function loadTrips() {
+      try {
+        const trips = await getTripsByStudent(userProfile?.id);
+        if (!mounted) return;
+        const completed = trips
+          .filter((t) => t.status === 'completed')
+          .slice(0, 3)
+          .map((t) => ({
+            id: t.id,
+            destination: t.dest_text || 'Destination',
+            date: t.created_at ? new Date(t.created_at).toLocaleDateString() : '',
+          }));
+        setRecentTrips(completed);
+      } catch (e) {
+        console.warn('Could not load recent trips:', e.message);
+      }
+    }
+    if (userProfile?.id) loadTrips();
+    return () => { mounted = false; };
+  }, [userProfile?.id]);
+
+  // Per-tab animated scale for press bounce
+  const tabScales = useRef(
+    NAV_TABS.reduce((acc, tab) => {
+      acc[tab.key] = new Animated.Value(1);
+      return acc;
+    }, {})
+  ).current;
+
+  // FAB scale animation
+  const fabScale = useRef(new Animated.Value(1)).current;
+
+  const animateTabPress = (key) => {
+    Animated.sequence([
+      Animated.spring(tabScales[key], { toValue: 0.88, useNativeDriver: Platform.OS !== 'web', speed: 80 }),
+      Animated.spring(tabScales[key], { toValue: 1, useNativeDriver: Platform.OS !== 'web', speed: 60 }),
+    ]).start();
+  };
+
+  const handleNavPress = (key) => {
+    animateTabPress(key);
+    setActiveTab(key);
+    setShowAcceptPopup(false);
+    onNavigate(key);
+  };
+
+  const handleFabPressIn = () => {
+    Animated.spring(fabScale, { toValue: 0.88, useNativeDriver: true, speed: 50 }).start();
+  };
+  const handleFabPressOut = () => {
+    Animated.spring(fabScale, { toValue: 1, useNativeDriver: true, speed: 30 }).start();
+  };
 
   const fetchTrip = useCallback(async () => {
     if (!activeTripId) return;
@@ -83,6 +222,11 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
   useEffect(() => {
     if (activeTrip && activeTrip.status === 'accepted' && activeDriver && prevStatusRef.current !== 'accepted') {
       setShowAcceptPopup(true);
+      sendLocalNotification(
+        'Ride Accepted! 🚗',
+        `${activeDriver.full_name || 'A driver'} has accepted your ride request.`,
+        { tripId: activeTrip.id }
+      );
       prevStatusRef.current = 'accepted';
     }
     if (activeTrip && activeTrip.status === 'pending') {
@@ -90,31 +234,25 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
     }
   }, [activeTrip, activeDriver]);
 
-  const recentTrips = [
-    { id: '1', destination: 'SM City Mall', date: 'Oct 12 • 4:20 PM' },
-    { id: '2', destination: 'Main Campus Gate', date: 'Oct 11 • 8:15 AM' },
-    { id: '3', destination: 'Blue Residence', date: 'Oct 10 • 9:30 PM' },
-  ];
+  const activeTripDistInfo = useMemo(() => {
+    if (!activeTrip?.pickup_lat || !activeTrip?.dest_lat) return null;
+    const distKm = haversineDistance(activeTrip.pickup_lat, activeTrip.pickup_lng, activeTrip.dest_lat, activeTrip.dest_lng);
+    const distText = formatDistanceText(Math.round(distKm * 1000));
+    const estMins = Math.max(1, Math.round(distKm * 3));
+    const durationText = formatDurationText(estMins);
+    return `${distText} • ${durationText}`;
+  }, [activeTrip?.pickup_lat, activeTrip?.pickup_lng, activeTrip?.dest_lat, activeTrip?.dest_lng]);
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <TouchableOpacity style={styles.headerIconBtn}>
-            <MaterialIcons name="menu" size={24} color={COLORS.primary} />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>TriRide</Text>
-        </View>
-        <TouchableOpacity style={styles.avatarBtn} onPress={() => onNavigate('Profile')}>
-          {userProfile?.avatar_url ? (
-            <Image source={{ uri: userProfile.avatar_url }} style={styles.avatar} />
-          ) : (
-            <View style={[styles.avatar, styles.avatarDefault]}>
-              <Text style={styles.avatarInitials}>
-                {userProfile?.full_name ? userProfile.full_name.charAt(0).toUpperCase() : 'S'}
-              </Text>
-            </View>
-          )}
+        <TriRideTextLogo size="small" />
+        <TouchableOpacity style={styles.avatarBtn} onPress={() => onNavigate('Profile')} activeOpacity={0.8}>
+          <UserAvatar
+            uri={userProfile?.avatar_url}
+            name={userProfile?.full_name || 'Student'}
+            size={40}
+          />
         </TouchableOpacity>
       </View>
 
@@ -124,8 +262,10 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
           <Text style={styles.welcomeSubtitle}>Where are you heading today?</Text>
         </View>
 
-        {activeTripId && activeTrip && activeTrip.status === 'pending' && (
-          <View style={[styles.activeRideBanner, styles.pendingBanner, SHADOWS.diffusion]}>
+        {tripLoading && activeTripId && <TripBannerSkeleton />}
+
+        {!tripLoading && activeTripId && activeTrip && activeTrip.status === 'pending' && (
+          <View style={[styles.activeRideBanner, styles.pendingBanner]}>
             <View style={styles.activeRideLeft}>
               <ActivityIndicator size="small" color={COLORS.primary} />
               <View style={styles.activeRideTextWrap}>
@@ -133,9 +273,17 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
                 <Text style={styles.activeRideSubtitle} numberOfLines={1}>
                   {activeTrip.pickup_text} → {activeTrip.dest_text}
                 </Text>
+                {activeTripDistInfo && (
+                  <Text style={styles.activeRideMetaText}>
+                    📍 {activeTripDistInfo}
+                  </Text>
+                )}
               </View>
             </View>
-              <TouchableOpacity style={styles.activeRideCancelBtn} onPress={() => { setShowAcceptPopup(false); onCancelTrip(); }}>
+            <TouchableOpacity
+              style={styles.activeRideCancelBtn}
+              onPress={() => setShowCancelModal(true)}
+            >
               <Text style={styles.activeRideCancelText}>Cancel</Text>
             </TouchableOpacity>
           </View>
@@ -143,17 +291,26 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
 
         {activeTripId && activeTrip && activeTrip.status === 'accepted' && activeDriver && (
           <TouchableOpacity
-            style={[styles.activeRideBanner, styles.acceptedBanner, SHADOWS.diffusion]}
+            style={[styles.activeRideBanner, styles.acceptedBanner]}
             activeOpacity={0.8}
             onPress={() => onViewTrip(activeTripId)}
           >
             <View style={styles.activeRideLeft}>
-              <View style={styles.acceptedDot} />
+              <UserAvatar
+                uri={activeDriver.avatar_url}
+                name={activeDriver.full_name || 'Driver'}
+                size={38}
+              />
               <View style={styles.activeRideTextWrap}>
                 <Text style={[styles.activeRideTitle, { color: COLORS.secondary }]}>Driver found!</Text>
                 <Text style={styles.activeRideSubtitle}>
                   {activeDriver.full_name} • {activeDriver.vehicle_type || 'Tricycle'} • {activeDriver.plate_number || 'N/A'}
                 </Text>
+                {activeTripDistInfo && (
+                  <Text style={styles.activeRideMetaText}>
+                    📍 {activeTripDistInfo}
+                  </Text>
+                )}
               </View>
             </View>
             <View style={styles.viewDetailsBtn}>
@@ -166,11 +323,41 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
         {activeTripId && activeTrip && activeTrip.status === 'cancelled' && (
           <View style={[styles.activeRideBanner, styles.cancelledBanner]}>
             <MaterialIcons name="cancel" size={20} color={COLORS.error} />
-            <Text style={styles.cancelledText}>Ride was cancelled</Text>
+            <Text style={[styles.cancelledText, { flex: 1 }]}>
+              {activeTrip.notes && activeTrip.notes.includes('[Cancelled')
+                ? activeTrip.notes.split('\n').filter((n) => n.includes('[Cancelled')).pop().replace(/[\[\]]/g, '')
+                : 'Ride was cancelled'}
+            </Text>
+            <TouchableOpacity onPress={onCancelTrip} style={{ padding: 4 }}>
+              <MaterialIcons name="close" size={18} color={COLORS.error} />
+            </TouchableOpacity>
           </View>
         )}
 
-        <View style={[styles.searchCard, SHADOWS.diffusion]}>
+        {activeTripId && activeTrip && activeTrip.status === 'completed' && (
+          <TouchableOpacity
+            style={[styles.activeRideBanner, styles.completedBanner]}
+            activeOpacity={0.8}
+            onPress={() => onViewTrip(activeTripId)}
+          >
+            <View style={styles.activeRideLeft}>
+              <MaterialIcons name="star" size={20} color={ACCENT.amber} />
+              <View style={styles.activeRideTextWrap}>
+                <Text style={[styles.activeRideTitle, { color: ACCENT.orangeDeep }]}>Ride completed!</Text>
+                <Text style={styles.activeRideSubtitle}>Tap to rate your driver</Text>
+              </View>
+            </View>
+            <View style={styles.viewDetailsBtn}>
+              <Text style={styles.viewDetailsText}>Rate Driver</Text>
+              <MaterialIcons name="chevron-right" size={18} color={COLORS.primary} />
+            </View>
+          </TouchableOpacity>
+        )}
+
+        <LinearGradient
+          {...GRADIENTS.wash}
+          style={[styles.searchCard, ELEVATION.md]}
+        >
           <TouchableOpacity style={styles.searchBar} activeOpacity={0.8} onPress={onBookRide}>
             <MaterialIcons name="search" size={20} color={COLORS.primary} />
             <Text style={styles.searchText}>Where to?</Text>
@@ -198,6 +385,34 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
                 <Text style={styles.quickLocationSubtitle}>Main Academic Quad</Text>
               </View>
             </TouchableOpacity>
+          </View>
+        </LinearGradient>
+
+        {/* Live Driver Status */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Live Drivers</Text>
+            <View style={styles.liveBadge}>
+              <Animated.View style={[styles.liveDotWrap, { transform: [{ scale: liveDotScale }] }]}>
+                <Animated.View style={[styles.liveDot, { opacity: liveDotFade }]} />
+              </Animated.View>
+              <Text style={styles.liveBadgeText}>LIVE</Text>
+            </View>
+          </View>
+
+          <View style={[styles.availabilityCard, ELEVATION.sm]}>
+            <View style={styles.availabilityMain}>
+              <Animated.View style={[styles.availabilityNumberWrap, countTickStyle]}>
+                <Text style={styles.availabilityNumber}>{availability.online}</Text>
+                <Text style={styles.availabilityUnit}>drivers online</Text>
+              </Animated.View>
+              <Text style={styles.availabilitySub}>of {availability.total} registered drivers</Text>
+            </View>
+
+            <View style={styles.availabilityChips}>
+              <DriverStatusChip variant="waiting" count={availability.available} />
+              <DriverStatusChip variant="ontrip" count={availability.onTrip} />
+            </View>
           </View>
         </View>
 
@@ -228,51 +443,34 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
         <View style={[styles.section, { marginBottom: 100 }]}>
           <Text style={styles.sectionTitle}>Ride Safely</Text>
           <View style={styles.safetyGrid}>
-            <View style={[styles.safetyCard, { backgroundColor: COLORS.primaryContainer }]}>
-              <MaterialIcons name="shield" size={32} color="#ffffff" />
+            <LinearGradient
+              {...GRADIENTS.brand}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={[styles.safetyCard, ELEVATION.sm]}
+            >
+              <MaterialIcons name="shield" size={32} color={CANVAS.raised} />
               <View>
                 <Text style={styles.safetyCardTitle}>Emergency Support</Text>
                 <Text style={styles.safetyCardCaption}>Direct link to campus security</Text>
               </View>
-            </View>
+            </LinearGradient>
 
-            <View style={[styles.safetyCard, { backgroundColor: COLORS.secondaryContainer }]}>
-              <MaterialIcons name="share-location" size={32} color={COLORS.onSecondaryContainer} />
+            <LinearGradient
+              colors={[ACCENT.greenSoft, ACCENT.greenWash]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={[styles.safetyCard, ELEVATION.sm]}
+            >
+              <MaterialIcons name="share-location" size={32} color={ACCENT.green} />
               <View>
-                <Text style={[styles.safetyCardTitle, { color: COLORS.onSecondaryContainer }]}>Share Status</Text>
-                <Text style={[styles.safetyCardCaption, { color: COLORS.onSecondaryContainer, opacity: 0.8 }]}>Let friends know you're safe</Text>
+                <Text style={[styles.safetyCardTitle, { color: ACCENT.greenInk }]}>Share Status</Text>
+                <Text style={[styles.safetyCardCaption, { color: ACCENT.greenInkMuted, opacity: 0.8 }]}>Let friends know you're safe</Text>
               </View>
-            </View>
+            </LinearGradient>
           </View>
         </View>
       </ScrollView>
-
-      <View style={styles.bottomNav}>
-        <TouchableOpacity style={styles.navItem} onPress={() => onNavigate('Home')}>
-          <MaterialIcons name="home" size={24} color={COLORS.primary} />
-          <Text style={[styles.navText, styles.navTextActive]}>Home</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.navItem} onPress={() => { setShowAcceptPopup(false); onNavigate('MyOrders'); }}>
-          <MaterialIcons name="receipt-long" size={24} color={COLORS.onSurfaceVariant} />
-          <Text style={styles.navText}>Orders</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.navItem} onPress={onBookRide}>
-          <MaterialIcons name="directions-car" size={24} color={COLORS.onSurfaceVariant} />
-          <Text style={styles.navText}>Bookings</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.navItem} onPress={() => { setShowAcceptPopup(false); onNavigate('Messages'); }}>
-          <MaterialIcons name="chat" size={24} color={COLORS.onSurfaceVariant} />
-          <Text style={styles.navText}>Messages</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.navItem} onPress={() => { setShowAcceptPopup(false); onNavigate('Profile'); }}>
-          <MaterialIcons name="person" size={24} color={COLORS.onSurfaceVariant} />
-          <Text style={styles.navText}>Profile</Text>
-        </TouchableOpacity>
-      </View>
 
       {/* Driver Acceptance Popup */}
       <Modal
@@ -330,12 +528,39 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
                   onViewTrip(activeTripId);
                 }}
               >
-                <Text style={styles.modalBtnViewText}>View Details</Text>
+                <LinearGradient {...GRADIENTS.brand} style={styles.modalBtnView}>
+                  <Text style={styles.modalBtnViewText}>View Details</Text>
+                </LinearGradient>
               </TouchableOpacity>
             </View>
           </View>
         </View>
       </Modal>
+
+      <CancelRideModal
+        visible={showCancelModal}
+        role="student"
+        tripStatus={activeTrip?.status || 'pending'}
+        onClose={() => setShowCancelModal(false)}
+        onConfirm={async (reason) => {
+          if (!activeTripId) return;
+          setCancelling(true);
+          try {
+            await cancelTripWithReason({
+              tripId: activeTripId,
+              role: 'student',
+              reason,
+            });
+            setShowCancelModal(false);
+            onCancelTrip();
+          } catch (e) {
+            console.warn('Failed to cancel trip:', e);
+          } finally {
+            setCancelling(false);
+          }
+        }}
+        loading={cancelling}
+      />
     </View>
   );
 }
@@ -349,9 +574,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     height: 60,
     paddingTop: 8,
-    backgroundColor: COLORS.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.outlineVariant,
+    // Was a hard 1px COLORS.outlineVariant rule under a flat fill. A soft
+    // hairline plus ELEVATION.sm lets the header float over the content.
+    backgroundColor: CANVAS.raised,
+    ...ELEVATION.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(15, 23, 42, 0.05)',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: SPACING.marginMobile,
@@ -361,44 +589,19 @@ const styles = StyleSheet.create({
     right: 0,
     zIndex: 10,
   },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: SPACING.sm,
-  },
-  headerIconBtn: {
-    padding: SPACING.xs,
-  },
-  headerTitle: {
-    ...TYPOGRAPHY.sectionTitle,
-    color: COLORS.primary,
-    fontWeight: '800',
-  },
+  // logoBadge / brandContainer / brandText / brandTextAccent / avatarDefault /
+  // avatarInitials / avatar were removed: the header renders TriRideTextLogo
+  // and UserAvatar, so these had 0 references.
   avatarBtn: {
     width: 40,
     height: 40,
     borderRadius: 20,
     overflow: 'hidden',
   },
-  avatar: {
-    width: '100%',
-    height: '100%',
-  },
-  avatarDefault: {
-    borderRadius: 20,
-    backgroundColor: COLORS.primaryContainer,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatarInitials: {
-    ...TYPOGRAPHY.button,
-    color: '#ffffff',
-    fontWeight: '700',
-  },
   scrollContent: {
     paddingTop: 76,
     paddingHorizontal: SPACING.marginMobile,
-    paddingBottom: 40,
+    paddingBottom: 95,
   },
   welcomeSection: {
     marginTop: SPACING.md,
@@ -413,28 +616,30 @@ const styles = StyleSheet.create({
     ...TYPOGRAPHY.body,
     color: COLORS.onSurfaceVariant,
   },
+  // The fill itself is a GRADIENTS.wash LinearGradient now, so the style
+  // only carries shape and depth. The old pair of 1px outlineVariant
+  // borders is what made this card look drawn rather than lifted.
   searchCard: {
-    backgroundColor: COLORS.surfaceContainerLowest,
-    borderWidth: 1,
-    borderColor: COLORS.outlineVariant,
     borderRadius: ROUNDED.lg,
     padding: SPACING.md,
     marginBottom: SPACING.lg,
   },
   searchBar: {
     flexDirection: 'row',
-    backgroundColor: '#F1F5F9',
+    // A raised white pill sitting on the tinted card reads as an input
+    // without needing a hard outline around it.
+    backgroundColor: CANVAS.raised,
+    ...ELEVATION.xs,
     height: 48,
     borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(115, 118, 134, 0.1)',
+    ...BORDERS.hair,
     alignItems: 'center',
     paddingHorizontal: SPACING.md,
     gap: SPACING.sm,
   },
   searchText: {
     ...TYPOGRAPHY.body,
-    color: COLORS.outline,
+    color: INK.subtle,
   },
   quickLocations: {
     marginTop: SPACING.md,
@@ -466,8 +671,8 @@ const styles = StyleSheet.create({
     color: COLORS.onSurfaceVariant,
   },
   quickDivider: {
-    height: 1,
-    backgroundColor: 'rgba(195, 198, 215, 0.3)',
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(15, 23, 42, 0.08)',
     marginLeft: 48,
   },
   section: {
@@ -487,7 +692,7 @@ const styles = StyleSheet.create({
   seeAllText: {
     ...TYPOGRAPHY.button,
     fontSize: 14,
-    color: COLORS.primary,
+    color: ACCENT.blueDeep,
   },
   tripsContainer: {
     gap: SPACING.sm,
@@ -496,9 +701,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     padding: SPACING.md,
-    backgroundColor: COLORS.surfaceContainerLowest,
-    borderWidth: 1,
-    borderColor: COLORS.outlineVariant,
+    backgroundColor: CANVAS.raised,
+    ...ELEVATION.sm,
     borderRadius: 16,
     gap: SPACING.md,
   },
@@ -506,7 +710,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 12,
-    backgroundColor: COLORS.surfaceContainerHigh,
+    backgroundColor: CANVAS.sunken,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -538,48 +742,19 @@ const styles = StyleSheet.create({
   safetyCardTitle: {
     ...TYPOGRAPHY.body,
     fontWeight: '700',
-    color: '#ffffff',
+    color: CANVAS.raised,
     lineHeight: 18,
   },
   safetyCardCaption: {
     fontSize: 11,
-    color: '#ffffff',
+    color: CANVAS.raised,
     opacity: 0.85,
     marginTop: 4,
   },
-  bottomNav: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 75,
-    backgroundColor: COLORS.surface,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.outlineVariant,
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    alignItems: 'center',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 10,
-    elevation: 10,
-    paddingBottom: 15,
-  },
-  navItem: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 8,
-  },
-  navText: {
-    ...TYPOGRAPHY.navLabel,
-    color: COLORS.onSurfaceVariant,
-    marginTop: 2,
-  },
-  navTextActive: {
-    color: COLORS.primary,
-    fontWeight: '700',
-  },
+  // bottomNavWrapper / bottomNav / navItem / navPill / navFabPlaceholder /
+  // navText / navTextActive / fabWrapper / fab were removed. App.js renders
+  // components/BottomNavBar, so this screen had a second, stale copy of the
+  // navbar stylesheet with zero references.
   activeRideBanner: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -588,22 +763,29 @@ const styles = StyleSheet.create({
     padding: SPACING.md,
     marginBottom: SPACING.md,
   },
+  // Tinted status fills. These were 8%-alpha backgrounds paired with a
+  // matching 20-35% alpha border, which is the "hard stroke" look; the
+  // hairline keeps the state readable without drawing a box around it.
   pendingBanner: {
-    backgroundColor: 'rgba(0,74,198,0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(0,74,198,0.2)',
+    backgroundColor: 'rgba(37, 99, 235, 0.08)',
+    ...BORDERS.accent,
   },
   acceptedBanner: {
-    backgroundColor: 'rgba(0,108,73,0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(0,108,73,0.2)',
+    backgroundColor: 'rgba(22, 163, 74, 0.08)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(22, 163, 74, 0.22)',
   },
   cancelledBanner: {
-    backgroundColor: 'rgba(186,26,26,0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(186,26,26,0.2)',
+    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(239, 68, 68, 0.22)',
     justifyContent: 'center',
     gap: SPACING.sm,
+  },
+  completedBanner: {
+    backgroundColor: 'rgba(245, 158, 11, 0.08)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(245, 158, 11, 0.24)',
   },
   activeRideLeft: {
     flexDirection: 'row',
@@ -617,12 +799,19 @@ const styles = StyleSheet.create({
   activeRideTitle: {
     ...TYPOGRAPHY.body,
     fontWeight: '700',
-    color: COLORS.primary,
+    color: ACCENT.blueDeep,
   },
   activeRideSubtitle: {
     ...TYPOGRAPHY.caption,
     color: COLORS.onSurfaceVariant,
     marginTop: 2,
+  },
+  activeRideMetaText: {
+    ...TYPOGRAPHY.caption,
+    color: ACCENT.blueDeep,
+    fontWeight: '700',
+    fontSize: 11,
+    marginTop: 3,
   },
   activeRideCancelBtn: {
     paddingHorizontal: SPACING.md,
@@ -656,13 +845,14 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: 'rgba(10, 15, 30, 0.45)',
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: SPACING.marginMobile,
   },
   modalContent: {
-    backgroundColor: '#ffffff',
+    backgroundColor: CANVAS.raised,
+    ...ELEVATION.lg,
     borderRadius: ROUNDED.lg,
     width: '100%',
     maxWidth: 380,
@@ -703,7 +893,7 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 12,
-    backgroundColor: '#ffffff',
+    backgroundColor: ACCENT.blueSoft,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -745,11 +935,10 @@ const styles = StyleSheet.create({
     flex: 1,
     height: 48,
     borderRadius: ROUNDED.md,
-    borderWidth: 1,
-    borderColor: COLORS.outlineVariant,
+    ...BORDERS.strong,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#ffffff',
+    backgroundColor: CANVAS.raised,
   },
   modalBtnDismissText: {
     ...TYPOGRAPHY.button,
@@ -759,12 +948,82 @@ const styles = StyleSheet.create({
     flex: 1.5,
     height: 48,
     borderRadius: ROUNDED.md,
-    backgroundColor: COLORS.primaryContainer,
+    // borderRadius does not clip children in React Native; without this the
+    // gradient fill renders with square corners.
+    overflow: 'hidden',
     justifyContent: 'center',
     alignItems: 'center',
   },
   modalBtnViewText: {
     ...TYPOGRAPHY.button,
-    color: '#ffffff',
+    color: CANVAS.raised,
+  },
+  // Live Driver Status
+  liveBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(34, 197, 94, 0.12)',
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 20,
+  },
+  liveDotWrap: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: 'rgba(34, 197, 94, 0.25)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  liveDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: ACCENT.greenBright,
+  },
+  liveBadgeText: {
+    ...TYPOGRAPHY.button,
+    fontSize: 12,
+    fontWeight: '800',
+    color: ACCENT.green,
+    letterSpacing: 0.6,
+  },
+  availabilityCard: {
+    backgroundColor: CANVAS.raised,
+    ...ELEVATION.sm,
+    borderRadius: 20,
+    padding: SPACING.lg,
+    gap: SPACING.md,
+  },
+  availabilityMain: {
+    alignItems: 'center',
+  },
+  availabilityNumberWrap: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 8,
+  },
+  availabilityNumber: {
+    ...TYPOGRAPHY.headlineLgMobile,
+    fontSize: 44,
+    lineHeight: 48,
+    fontWeight: '800',
+    color: ACCENT.blueDeep,
+  },
+  availabilityUnit: {
+    ...TYPOGRAPHY.button,
+    fontWeight: '700',
+    color: COLORS.onSurface,
+    fontSize: 15,
+  },
+  availabilitySub: {
+    ...TYPOGRAPHY.caption,
+    color: COLORS.onSurfaceVariant,
+    marginTop: 2,
+  },
+  availabilityChips: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
   },
 });

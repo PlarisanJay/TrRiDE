@@ -2,20 +2,37 @@ import React, { useState } from 'react';
 import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, KeyboardAvoidingView, Alert } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { COLORS, TYPOGRAPHY, SPACING, ROUNDED, SHADOWS } from '../../theme';
-import { signIn } from '../../data/auth';
+import { signIn, resetPassword } from '../../data/auth';
+import TriRideTextLogo from '../../components/TriRideTextLogo';
 
 export default function LoginScreen({ onLoginSuccess, onSignUp }) {
-  const [email, setEmail] = useState('');
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
+  const handleForgotPassword = async () => {
+    if (!identifier.trim()) {
+      setError('Please enter your username, mobile number, or Gmail above, then tap Forgot Password.');
+      return;
+    }
+    try {
+      const targetEmail = await resetPassword(identifier.trim());
+      Alert.alert(
+        'Check Your Gmail',
+        `A password reset confirmation link has been sent to your registered Gmail address: ${targetEmail}`
+      );
+    } catch (e) {
+      setError(e.message || 'Failed to send reset email. Please try again.');
+    }
+  };
+
   const handleSubmit = async () => {
     setError('');
 
-    if (!email.trim()) {
-      setError('Please enter your email address.');
+    if (!identifier.trim()) {
+      setError('Please enter your username or Gmail address.');
       return;
     }
     if (!password) {
@@ -25,13 +42,13 @@ export default function LoginScreen({ onLoginSuccess, onSignUp }) {
 
     setLoading(true);
     try {
-      const { profile } = await signIn({ email: email.trim(), password });
+      const { profile } = await signIn({ identifier: identifier.trim(), password });
       onLoginSuccess(profile.role, profile);
     } catch (e) {
       const msg = e.message || 'Login failed. Please try again.';
       // Map Supabase generic errors to user-friendly messages
       if (msg.includes('Invalid login credentials')) {
-        setError('Invalid email or password. Please check your credentials and try again.');
+        setError('Invalid credentials. Please check your username/Gmail and password and try again.');
       } else {
         setError(msg);
       }
@@ -48,7 +65,7 @@ export default function LoginScreen({ onLoginSuccess, onSignUp }) {
       <ScrollView contentContainerStyle={styles.scrollContainer} keyboardShouldPersistTaps="handled">
         {/* Top Logo */}
         <View style={styles.header}>
-          <Text style={styles.logoText}>TriRide</Text>
+          <TriRideTextLogo size="medium" />
         </View>
 
         <View style={styles.main}>
@@ -65,19 +82,18 @@ export default function LoginScreen({ onLoginSuccess, onSignUp }) {
               </View>
             ) : null}
 
-            {/* Email Field */}
+            {/* Username / Gmail Field */}
             <View style={styles.inputWrapper}>
-              <Text style={styles.inputLabel}>Email Address</Text>
+              <Text style={styles.inputLabel}>Username or Gmail</Text>
               <View style={styles.inputContainer}>
-                <MaterialIcons name="mail" size={20} color={COLORS.outline} style={styles.inputIcon} />
+                <MaterialIcons name="person-outline" size={20} color={COLORS.outline} style={styles.inputIcon} />
                 <TextInput
                   style={styles.input}
-                  placeholder="name@example.com"
+                  placeholder="e.g. jdoe or jdoe@gmail.com"
                   placeholderTextColor="rgba(115, 118, 134, 0.5)"
-                  keyboardType="email-address"
                   autoCapitalize="none"
-                  value={email}
-                  onChangeText={(text) => { setEmail(text); setError(''); }}
+                  value={identifier}
+                  onChangeText={(text) => { setIdentifier(text); setError(''); }}
                 />
               </View>
             </View>
@@ -86,7 +102,7 @@ export default function LoginScreen({ onLoginSuccess, onSignUp }) {
             <View style={styles.inputWrapper}>
               <View style={styles.passwordHeader}>
                 <Text style={styles.inputLabel}>Password</Text>
-                <TouchableOpacity>
+                <TouchableOpacity onPress={handleForgotPassword}>
                   <Text style={styles.forgotText}>Forgot Password?</Text>
                 </TouchableOpacity>
               </View>

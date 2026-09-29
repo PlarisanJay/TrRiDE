@@ -305,9 +305,9 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
             activeOpacity={0.85}
             onPress={() => onNavigate?.('Profile')}
           >
-            <LinearGradient {...GRADIENTS.brandBright} style={styles.floatingAvatarFill}>
+            <View style={[styles.floatingAvatarFill, { backgroundColor: ACCENT.blue }]}>
               <Text style={styles.avatarInitialsText}>{getInitials()}</Text>
-            </LinearGradient>
+            </View>
           </TouchableOpacity>
         </View>
 
@@ -622,9 +622,9 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
             activeOpacity={0.88}
             onPress={handleConfirm}
           >
-            <LinearGradient {...GRADIENTS.brand} style={styles.btnConfirmBookingFill}>
+            <View style={[styles.btnConfirmBookingFill, { backgroundColor: ACCENT.blue }]}>
               <Text style={styles.btnConfirmBookingText}>Confirm Booking</Text>
-            </LinearGradient>
+            </View>
           </TouchableOpacity>
         </ScrollView>
       </View>
@@ -742,13 +742,13 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
                 onPress={handleFinalConfirm}
                 disabled={booking}
               >
-                <LinearGradient {...GRADIENTS.brand} style={styles.modalBtnFinalConfirmFill}>
+                <View style={[styles.modalBtnFinalConfirmFill, { backgroundColor: ACCENT.blue }]}>
                   {booking ? (
                     <ActivityIndicator size="small" color={CANVAS.raised} />
                   ) : (
                     <Text style={styles.modalBtnFinalConfirmText}>Confirm Booking</Text>
                   )}
-                </LinearGradient>
+                </View>
               </TouchableOpacity>
             </View>
           </View>

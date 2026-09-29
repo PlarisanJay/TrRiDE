@@ -9,6 +9,7 @@ import {
   Platform,
   BackHandler,
   ToastAndroid,
+  useWindowDimensions,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import SplashScreen from './screens/auth/SplashScreen';
@@ -29,6 +30,12 @@ import MessagesScreen from './screens/shared/MessagesScreen';
 import ProfileScreen from './screens/shared/ProfileScreen';
 import SettingsScreen from './screens/shared/SettingsScreen';
 import BottomNavBar from './components/BottomNavBar';
+import DialogHost from './components/DialogHost';
+import ScreenFrame from './components/ScreenFrame';
+import AppShell from './components/AppShell';
+import InstallBanner from './components/InstallBanner';
+import { isNavScreen, isRailVisible } from './lib/nav';
+import { frameVariantForScreen } from './lib/webLayout';
 import { COLORS } from './theme';
 import { getCurrentSession, getCurrentProfile, signOut, setDriverOnlineStatus } from './data/auth';
 import { supabase } from './config/supabase';
@@ -43,7 +50,7 @@ const getDashboardForRole = (role) => {
   return 'StudentDashboard';
 };
 
-export default function App() {
+function AppRouter() {
   const [currentScreen, setCurrentScreen] = useState('Splash');
   const [userRole, setUserRole] = useState(null);
   const [userProfile, setUserProfile] = useState(null);
@@ -57,6 +64,15 @@ export default function App() {
 
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const slideAnim = useRef(new Animated.Value(0)).current;
+
+  // Measured here, not inside AppShell, because this same value decides
+  // whether the phone BottomNavBar renders. One measurement, one predicate
+  // (lib/nav.js isRailVisible), two consumers — so the rail and the tab bar
+  // can never both be on screen. Unconditional on every platform; on native
+  // isRailVisible returns false regardless of the width it is handed.
+  const { width: windowWidth } = useWindowDimensions();
+  const showRail = isRailVisible(currentScreen, isInChat, windowWidth, Platform.OS);
+  const frameVariant = frameVariantForScreen(currentScreen, Boolean(userProfile));
 
   useEffect(() => {
     fadeAnim.setValue(0.55);
@@ -90,7 +106,7 @@ export default function App() {
         }
         setInitializing(false);
       }
-    }, 2500);
+    }, 15000);
 
     const restoreSession = async () => {
       try {
@@ -173,7 +189,7 @@ export default function App() {
         return;
       }
 
-      if (event === 'TOKEN_REFRESHED' || event === 'SIGNED_IN') {
+      if (event === 'TOKEN_REFRESHED' || event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
         try {
           const profile = await getCurrentProfile();
           if (profile && profile.status === 'approved') {
@@ -186,12 +202,14 @@ export default function App() {
               if (currentScreenRef.current === 'Login' || currentScreenRef.current === 'Splash') {
                 setCurrentScreen(getDashboardForRole(profile.role));
               }
+              setInitializing(false);
             }
           }
         } catch (e) {
           console.warn('Auth state change profile fetch error:', e.message);
         }
       }
+
     });
 
     return () => {
@@ -388,12 +406,14 @@ export default function App() {
   // Show loading spinner while restoring session
   if (initializing) {
     return (
-      <SafeAreaProvider>
-        <View style={styles.container}>
-          <StatusBar barStyle="dark-content" backgroundColor={COLORS.surface} />
-          <ActivityIndicator size="large" color={COLORS.primary} style={{ flex: 1 }} />
-        </View>
-      </SafeAreaProvider>
+      <ScreenFrame>
+        <SafeAreaProvider>
+          <View style={styles.container}>
+            <StatusBar barStyle="dark-content" backgroundColor={COLORS.surface} />
+            <ActivityIndicator size="large" color={COLORS.primary} style={{ flex: 1 }} />
+          </View>
+        </SafeAreaProvider>
+      </ScreenFrame>
     );
   }
 
@@ -427,209 +447,254 @@ export default function App() {
     );
   }
 
+  // NOTE: the AdminDashboard branch above is deliberately NOT wrapped in
+  // AppShell. It renders its own persistent 260px sidebar
+  // (AdminDashboardScreen.js:41-53) and is a real wide layout, so centring it
+  // in a 480px column — or adding a second rail beside its own — would break
+  // it.
   return (
-    <SafeAreaProvider>
-      <SafeAreaView style={styles.container}>
-        <StatusBar barStyle="dark-content" backgroundColor={COLORS.surface} />
-        <Animated.View
-          style={[
-            styles.container,
-            {
-              opacity: fadeAnim,
-              ...(Platform.OS === 'ios' ? { transform: [{ translateY: slideAnim }] } : {}),
-            },
-          ]}
-        >
-          {currentScreen === 'Splash' && (
-            <SplashScreen onFinish={() => navigateTo('Login')} />
-          )}
-
-          {currentScreen === 'Login' && (
-            <LoginScreen
-              onLoginSuccess={handleLoginSuccess}
-              onSignUp={() => navigateTo('Register')}
-            />
-          )}
-
-          {currentScreen === 'Register' && (
-            <RegisterScreen
-              onLogin={() => navigateTo('Login')}
-            />
-          )}
-
-          {currentScreen === 'StudentDashboard' && (
-            <StudentDashboardScreen
-              userProfile={userProfile}
-              onNavigate={(target, params) => navigateTo(target, params)}
-              onBookRide={() => navigateTo('BookRide')}
-              activeTripId={activeTripId}
-              onViewTrip={(tripId) => {
-                setActiveTripId(tripId);
-                navigateTo('OrderDetails');
-              }}
-              onCancelTrip={() => {
-                setActiveTripId(null);
-              }}
-            />
-          )}
-
-          {currentScreen === 'BookRide' && (
-            <BookRideScreen
-              userProfile={userProfile}
-              onConfirmBooking={(tripId) => {
-                setActiveTripId(tripId);
-                navigateTo('BookingConfirmed');
-              }}
-              onNavigate={(target, params) => navigateTo(target, params)}
-            />
-          )}
-
-          {currentScreen === 'BookingConfirmed' && (
-            <BookingConfirmedScreen
-              onContinue={() => navigateTo('Home')}
-            />
-          )}
-
-          {currentScreen === 'TrackDriver' && (
-            <TrackDriverScreen
-              userProfile={userProfile}
-              tripId={activeTripId}
-              onCancelTrip={() => { setActiveTripId(null); navigateTo('StudentDashboard'); }}
-              onNavigate={(target, params) => navigateTo(target, params)}
-            />
-          )}
-
-          {currentScreen === 'OrderDetails' && (
-            <OrderDetailsScreen
-              userProfile={userProfile}
-              tripId={activeTripId}
-              onGoBack={() => navigateTo('StudentDashboard')}
-              onNavigate={(target, params) => navigateTo(target, params)}
-            />
-          )}
-
-          {currentScreen === 'MyOrders' && (
-            <MyOrdersScreen
-              userProfile={userProfile}
-              onGoBack={() => navigateTo('StudentDashboard')}
-              onNavigate={(target) => navigateTo(target)}
-              onViewTrip={(tripId) => {
-                setActiveTripId(tripId);
-                navigateTo('OrderDetails');
-              }}
-            />
-          )}
-
-          {currentScreen === 'DriverDashboard' && (
-            <DriverDashboardScreen
-              userProfile={userProfile}
-              activeTripId={activeTripId}
-              isOnline={driverOnline}
-              onAcceptRide={(tripId) => {
-                setActiveTripId(tripId);
-                navigateTo('CurrentTrip');
-              }}
-              onNavigate={(target) => navigateTo(target)}
-            />
-          )}
-
-          {currentScreen === 'DriverCompletedRides' && (
-            <DriverCompletedRidesScreen
-              userProfile={userProfile}
-              onBack={goBack}
-            />
-          )}
-
-          {currentScreen === 'DriverTrips' && (
-            <DriverTripsScreen
-              userProfile={userProfile}
-              activeTripId={activeTripId}
-              onBack={goBack}
-              onResumeTrip={(tripId) => {
-                setActiveTripId(tripId);
-                navigateTo('CurrentTrip');
-              }}
-            />
-          )}
-
-          {currentScreen === 'CurrentTrip' && (
-            <CurrentTripScreen
-              userProfile={userProfile}
-              tripId={activeTripId}
-              onTripCompleted={() => {
-                clearActiveTrip();
-                setActiveTripId(null);
-                navigateTo('DriverDashboard');
-              }}
-              onCancelTrip={() => {
-                clearActiveTrip();
-                setActiveTripId(null);
-                navigateTo('DriverDashboard');
-              }}
-              onNavigate={(target, params) => navigateTo(target, params)}
-            />
-          )}
-
-          {currentScreen === 'Messages' && (
-            <MessagesScreen
-              userRole={userRole}
-              userProfile={userProfile}
-              tripId={chatTripId}
-              onBack={() => {
-                setChatTripId(null);
-                goBack();
-              }}
-              onChatOpen={() => setIsInChat(true)}
-              onChatClose={() => {
-                setIsInChat(false);
-                setChatTripId(null);
-              }}
-              onMessagesRead={() => {
-                if (userProfile?.id) {
-                  getUnreadMessagesCount(userProfile.id, userRole).then((count) => {
-                    setUnreadCount(count);
-                  });
-                }
-              }}
-            />
-          )}
-
-          {currentScreen === 'Profile' && (
-            <ProfileScreen
-              userRole={userRole}
-              userProfile={userProfile}
-              onLogout={handleLogout}
-              onBack={goBack}
-              onNavigate={(target) => navigateTo(target)}
-              onProfileUpdated={(updated) => setUserProfile(updated)}
-            />
-          )}
-
-          {currentScreen === 'Settings' && (
-            <SettingsScreen
-              userProfile={userProfile}
-              onBack={goBack}
-            />
-          )}
-
-          {/* Persistent Bottom Navigation Bar for Main Tab Screens.
-              'Profile' is deliberately excluded: it is reached from the Profile
-              tab, but the screen itself shows only its own back button. */}
-          {['StudentDashboard', 'DriverDashboard', 'MyOrders', 'Messages', 'Settings'].includes(currentScreen) && !(currentScreen === 'Messages' && isInChat) && (
-            <BottomNavBar
-              userRole={userRole}
-              currentScreen={currentScreen}
-              onNavigate={(target) => navigateTo(target)}
-              onBookRide={() => navigateTo('BookRide')}
-              unreadMessagesCount={unreadCount}
-              hasUnreadMessages={unreadCount > 0}
-            />
-          )}
-        </Animated.View>
-      </SafeAreaView>
-    </SafeAreaProvider>
+    <AppShell
+      banner={<InstallBanner />}
+      railActive={showRail}
+      frameVariant={frameVariant}
+      userRole={userRole}
+      userProfile={userProfile}
+      currentScreen={currentScreen}
+      onNavigate={(target) => navigateTo(target)}
+      onBookRide={() => navigateTo('BookRide')}
+      unreadMessagesCount={unreadCount}
+      onLogout={handleLogout}
+    >
+      <SafeAreaProvider>
+        <SafeAreaView style={styles.container}>
+          <StatusBar barStyle="dark-content" backgroundColor={COLORS.surface} />
+          <Animated.View
+            style={[
+              styles.container,
+              {
+                opacity: fadeAnim,
+                ...(Platform.OS === 'ios' ? { transform: [{ translateY: slideAnim }] } : {}),
+              },
+            ]}
+          >
+            {currentScreen === 'Splash' && (
+              <SplashScreen onFinish={() => navigateTo('Login')} />
+            )}
+  
+            {currentScreen === 'Login' && (
+              <LoginScreen
+                onLoginSuccess={handleLoginSuccess}
+                onSignUp={() => navigateTo('Register')}
+              />
+            )}
+  
+            {currentScreen === 'Register' && (
+              <RegisterScreen
+                onLogin={() => navigateTo('Login')}
+              />
+            )}
+  
+            {currentScreen === 'StudentDashboard' && (
+              <StudentDashboardScreen
+                userProfile={userProfile}
+                onNavigate={(target, params) => navigateTo(target, params)}
+                onBookRide={() => navigateTo('BookRide')}
+                activeTripId={activeTripId}
+                onViewTrip={(tripId) => {
+                  setActiveTripId(tripId);
+                  navigateTo('OrderDetails');
+                }}
+                onCancelTrip={() => {
+                  setActiveTripId(null);
+                }}
+              />
+            )}
+  
+            {currentScreen === 'BookRide' && (
+              <BookRideScreen
+                userProfile={userProfile}
+                onConfirmBooking={(tripId) => {
+                  setActiveTripId(tripId);
+                  navigateTo('BookingConfirmed');
+                }}
+                onNavigate={(target, params) => navigateTo(target, params)}
+              />
+            )}
+  
+            {currentScreen === 'BookingConfirmed' && (
+              <BookingConfirmedScreen
+                onContinue={() => navigateTo('Home')}
+              />
+            )}
+  
+            {currentScreen === 'TrackDriver' && (
+              <TrackDriverScreen
+                userProfile={userProfile}
+                tripId={activeTripId}
+                onCancelTrip={() => { setActiveTripId(null); navigateTo('StudentDashboard'); }}
+                onNavigate={(target, params) => navigateTo(target, params)}
+              />
+            )}
+  
+            {currentScreen === 'OrderDetails' && (
+              <OrderDetailsScreen
+                userProfile={userProfile}
+                tripId={activeTripId}
+                onGoBack={() => navigateTo('StudentDashboard')}
+                onNavigate={(target, params) => navigateTo(target, params)}
+              />
+            )}
+  
+            {currentScreen === 'MyOrders' && (
+              <MyOrdersScreen
+                userProfile={userProfile}
+                onGoBack={() => navigateTo('StudentDashboard')}
+                onNavigate={(target) => navigateTo(target)}
+                onViewTrip={(tripId) => {
+                  setActiveTripId(tripId);
+                  navigateTo('OrderDetails');
+                }}
+              />
+            )}
+  
+            {currentScreen === 'DriverDashboard' && (
+              <DriverDashboardScreen
+                userProfile={userProfile}
+                activeTripId={activeTripId}
+                isOnline={driverOnline}
+                onAcceptRide={(tripId) => {
+                  setActiveTripId(tripId);
+                  navigateTo('CurrentTrip');
+                }}
+                onNavigate={(target) => navigateTo(target)}
+              />
+            )}
+  
+            {currentScreen === 'DriverCompletedRides' && (
+              <DriverCompletedRidesScreen
+                userProfile={userProfile}
+                onBack={goBack}
+              />
+            )}
+  
+            {currentScreen === 'DriverTrips' && (
+              <DriverTripsScreen
+                userProfile={userProfile}
+                activeTripId={activeTripId}
+                onBack={goBack}
+                onResumeTrip={(tripId) => {
+                  setActiveTripId(tripId);
+                  navigateTo('CurrentTrip');
+                }}
+              />
+            )}
+  
+            {currentScreen === 'CurrentTrip' && (
+              <CurrentTripScreen
+                userProfile={userProfile}
+                tripId={activeTripId}
+                onTripCompleted={() => {
+                  clearActiveTrip();
+                  setActiveTripId(null);
+                  navigateTo('DriverDashboard');
+                }}
+                onCancelTrip={() => {
+                  clearActiveTrip();
+                  setActiveTripId(null);
+                  navigateTo('DriverDashboard');
+                }}
+                onNavigate={(target, params) => navigateTo(target, params)}
+              />
+            )}
+  
+            {currentScreen === 'Messages' && (
+              <MessagesScreen
+                userRole={userRole}
+                userProfile={userProfile}
+                tripId={chatTripId}
+                onBack={() => {
+                  setChatTripId(null);
+                  goBack();
+                }}
+                onChatOpen={() => setIsInChat(true)}
+                onChatClose={() => {
+                  setIsInChat(false);
+                  setChatTripId(null);
+                }}
+                onMessagesRead={() => {
+                  if (userProfile?.id) {
+                    getUnreadMessagesCount(userProfile.id, userRole).then((count) => {
+                      setUnreadCount(count);
+                    });
+                  }
+                }}
+              />
+            )}
+  
+            {currentScreen === 'Profile' && (
+              <ProfileScreen
+                userRole={userRole}
+                userProfile={userProfile}
+                onLogout={handleLogout}
+                onBack={goBack}
+                onNavigate={(target) => navigateTo(target)}
+                onProfileUpdated={(updated) => setUserProfile(updated)}
+              />
+            )}
+  
+            {currentScreen === 'Settings' && (
+              <SettingsScreen
+                userProfile={userProfile}
+                onBack={goBack}
+              />
+            )}
+  
+            {/* Persistent Bottom Navigation Bar for Main Tab Screens.
+                'Profile' is deliberately excluded: it is reached from the Profile
+                tab, but the screen itself shows only its own back button.
+                Suppressed when the desktop rail is showing, so wide web never
+                has two navigation surfaces stacked on the same screen. */}
+            {isNavScreen(currentScreen, isInChat) && !showRail && (
+              <BottomNavBar
+                userRole={userRole}
+                currentScreen={currentScreen}
+                onNavigate={(target) => navigateTo(target)}
+                onBookRide={() => navigateTo('BookRide')}
+                unreadMessagesCount={unreadCount}
+                hasUnreadMessages={unreadCount > 0}
+              />
+            )}
+          </Animated.View>
+        </SafeAreaView>
+      </SafeAreaProvider>
+    </AppShell>
   );
 }
+
+/**
+ * DialogHost is mounted here, as a sibling of the navigator rather than
+ * inside any of its three return trees.
+ *
+ * Two reasons it cannot live inside AppRouter:
+ *   - AppRouter has three separate return points (loading, admin, main).
+ *     Mounting per-branch would mean three chances to forget one.
+ *   - The main branch wraps every screen in an Animated.View. On web that
+ *     ancestor opacity creates a stacking context, which would trap the
+ *     dialog's position:fixed overlay behind the screen instead of over it.
+ *
+ * On native DialogHost returns null, so the rendered tree is identical to
+ * before this change and the phone is unaffected.
+ */
+function App() {
+  return (
+    <>
+      <AppRouter />
+      <DialogHost />
+    </>
+  );
+}
+
+export default App;
 
 const styles = StyleSheet.create({
   container: {

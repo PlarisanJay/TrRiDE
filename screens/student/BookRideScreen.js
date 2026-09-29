@@ -1,24 +1,10 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TextInput,
-  TouchableOpacity,
-  ScrollView,
-  KeyboardAvoidingView,
-  Alert,
-  Modal,
-  ActivityIndicator,
-  Platform,
-  Keyboard,
-} from 'react-native';
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, KeyboardAvoidingView, Modal, ActivityIndicator, Platform, Keyboard } from 'react-native';
+import { alertDialog } from '../../lib/dialog';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
-import { LinearGradient } from 'expo-linear-gradient';
 import {
   ELEVATION,
-  GRADIENTS,
   INK,
   CANVAS,
   ACCENT,
@@ -28,6 +14,7 @@ import { TOLEDO_CITY, fetchRoute, haversineDistance, reverseGeocode, formatDista
 import { createTrip } from '../../data/trips';
 import MapPreview from '../../components/MapPreview';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
+import { useWideWeb, wideMapStyles } from '../../lib/webLayout';
 
 export default function BookRideScreen({ userProfile, onConfirmBooking, onNavigate }) {
   const [pickup, setPickup] = useState('Current Location');
@@ -52,6 +39,7 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
   const [activeField, setActiveField] = useState(null); // 'pickup' | 'destination' | null
 
   const mapRef = useRef(null);
+  const isWideWeb = useWideWeb();
 
   // Auto-restore map when keyboard dismisses
   useEffect(() => {
@@ -64,30 +52,50 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
     };
   }, []);
 
+  // Get current position with high accuracy on web (navigator.geolocation)
+  // or expo-location on native. expo-location on web does not forward
+  // enableHighAccuracy which causes browsers to use the coarse IP-based location.
+  const getAccuratePosition = useCallback(() => {
+    return new Promise((resolve, reject) => {
+      if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => resolve({ coords: { latitude: pos.coords.latitude, longitude: pos.coords.longitude } }),
+          (err) => reject(err),
+          { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+        );
+      } else {
+        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High })
+          .then(resolve)
+          .catch(() => Location.getLastKnownPositionAsync({}).then(resolve).catch(reject));
+      }
+    });
+  }, []);
+
   // Auto-detect current location on mount and fill pickup location with high accuracy
   useEffect(() => {
     let isMounted = true;
     const autoDetectCurrentLocation = async () => {
       try {
-        const { status } = await Location.requestForegroundPermissionsAsync().catch(() => ({ status: 'denied' }));
-        if (status === 'granted') {
-          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }).catch(() => null) ||
-                      await Location.getLastKnownPositionAsync({}).catch(() => null);
-          if (loc?.coords && isMounted) {
-            const newCoords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
-            setPickupCoords(newCoords);
-            setMapRegion({
-              latitude: loc.coords.latitude,
-              longitude: loc.coords.longitude,
-              latitudeDelta: 0.015,
-              longitudeDelta: 0.015,
-            });
-            mapRef.current?.recenter(loc.coords.latitude, loc.coords.longitude);
+        // On web, navigator.geolocation handles its own permission prompt
+        if (Platform.OS !== 'web') {
+          const { status } = await Location.requestForegroundPermissionsAsync().catch(() => ({ status: 'denied' }));
+          if (status !== 'granted') return;
+        }
+        const loc = await getAccuratePosition().catch(() => null);
+        if (loc?.coords && isMounted) {
+          const newCoords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
+          setPickupCoords(newCoords);
+          setMapRegion({
+            latitude: loc.coords.latitude,
+            longitude: loc.coords.longitude,
+            latitudeDelta: 0.015,
+            longitudeDelta: 0.015,
+          });
+          mapRef.current?.recenter(loc.coords.latitude, loc.coords.longitude);
 
-            const addr = await reverseGeocode(loc.coords.latitude, loc.coords.longitude);
-            if (isMounted && !userEditedPickup && addr) {
-              setPickup(addr);
-            }
+          const addr = await reverseGeocode(loc.coords.latitude, loc.coords.longitude);
+          if (isMounted && !userEditedPickup && addr) {
+            setPickup(addr);
           }
         }
       } catch (e) {
@@ -104,33 +112,36 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
   // Manual GPS location detection when user taps recenter button (high accuracy)
   const handleRecenter = useCallback(async () => {
     try {
-      const hasServices = await Location.hasServicesEnabledAsync().catch(() => false);
-      if (!hasServices) {
-        Alert.alert('Location Disabled', 'Please turn on GPS on your device.');
-        return;
-      }
-
-      const { status } = await Location.requestForegroundPermissionsAsync().catch(() => ({ status: 'denied' }));
-      if (status === 'granted') {
-        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }).catch(() => null) ||
-                    await Location.getLastKnownPositionAsync({}).catch(() => null);
-        if (loc?.coords) {
-          const newCoords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
-          setPickupCoords(newCoords);
-          setMapRegion({
-            latitude: loc.coords.latitude,
-            longitude: loc.coords.longitude,
-            latitudeDelta: 0.015,
-            longitudeDelta: 0.015,
-          });
-          mapRef.current?.recenter(loc.coords.latitude, loc.coords.longitude);
-
-          const addr = await reverseGeocode(loc.coords.latitude, loc.coords.longitude);
-          if (addr && !userEditedPickup) {
-            setPickup(addr);
-          }
+      if (Platform.OS !== 'web') {
+        const hasServices = await Location.hasServicesEnabledAsync().catch(() => false);
+        if (!hasServices) {
+          alertDialog({ title: 'Location Disabled', message: 'Please turn on GPS on your device.' });
           return;
         }
+        const { status } = await Location.requestForegroundPermissionsAsync().catch(() => ({ status: 'denied' }));
+        if (status !== 'granted') {
+          if (pickupCoords) mapRef.current?.recenter(pickupCoords.latitude, pickupCoords.longitude);
+          return;
+        }
+      }
+
+      const loc = await getAccuratePosition().catch(() => null);
+      if (loc?.coords) {
+        const newCoords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
+        setPickupCoords(newCoords);
+        setMapRegion({
+          latitude: loc.coords.latitude,
+          longitude: loc.coords.longitude,
+          latitudeDelta: 0.015,
+          longitudeDelta: 0.015,
+        });
+        mapRef.current?.recenter(loc.coords.latitude, loc.coords.longitude);
+
+        const addr = await reverseGeocode(loc.coords.latitude, loc.coords.longitude);
+        if (addr && !userEditedPickup) {
+          setPickup(addr);
+        }
+        return;
       }
     } catch (e) {
       console.warn('Recenter location error:', e);
@@ -141,7 +152,7 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
     } else {
       mapRef.current?.recenter(TOLEDO_CITY.latitude, TOLEDO_CITY.longitude);
     }
-  }, [pickupCoords, userEditedPickup]);
+  }, [pickupCoords, userEditedPickup, getAccuratePosition]);
 
   // Pinpoint on map: tap map to accurately set pickup or destination coordinates
   const handleMapPress = useCallback(async (coords) => {
@@ -203,7 +214,7 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
 
   const handleConfirm = () => {
     if (!pickupCoords || !destinationCoords) {
-      Alert.alert('Missing Info', 'Please select both pickup and destination locations.');
+      alertDialog({ title: 'Missing Info', message: 'Please select both pickup and destination locations.' });
       return;
     }
     setShowConfirmation(true);
@@ -226,7 +237,7 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
       setShowConfirmation(false);
       onConfirmBooking?.(trip.id);
     } catch (e) {
-      Alert.alert('Error', 'Failed to create trip. Please try again.');
+      alertDialog({ title: 'Error', message: 'Failed to create trip. Please try again.' });
     } finally {
       setBooking(false);
     }
@@ -263,8 +274,9 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
       <View
         style={[
           styles.mapSection,
-          isSearchActive && styles.mapSectionCollapsed,
-          !isSearchActive && isSheetExpanded && styles.mapSectionCompact,
+          isWideWeb && wideMapStyles.mapSection,
+          !isWideWeb && isSearchActive && styles.mapSectionCollapsed,
+          !isWideWeb && !isSearchActive && isSheetExpanded && styles.mapSectionCompact,
         ]}
       >
         <MapPreview
@@ -278,7 +290,7 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
         />
 
         {/* Floating Back Button */}
-        <View style={styles.floatingHeaderArea} pointerEvents="box-none">
+        <View style={[styles.floatingHeaderArea, isWideWeb && wideMapStyles.floatingHeaderArea]} pointerEvents="box-none">
           <TouchableOpacity
             style={styles.floatingBackBtn}
             activeOpacity={0.85}
@@ -322,8 +334,10 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
       <View
         style={[
           styles.sheetContainer,
-          isSearchActive && styles.sheetContainerActive,
-          !isSearchActive && isSheetExpanded && styles.sheetContainerExpanded,
+          isWideWeb && wideMapStyles.sheetContainer,
+          !isWideWeb && isSearchActive && styles.sheetContainerActive,
+          !isWideWeb && !isSearchActive && isSheetExpanded && styles.sheetContainerExpanded,
+          isWideWeb && isSearchActive && wideMapStyles.sheetSearch,
         ]}
       >
         {isSearchActive ? (
@@ -478,16 +492,6 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
               activeOpacity={0.85}
               onPress={() => setScheduleMode('now')}
             >
-              {/* Always mounted, revealed by opacity. Keeps the selected
-                  segment from being a flat primary block without adding a
-                  conditional render around the button. */}
-              <LinearGradient
-                {...GRADIENTS.brand}
-                style={[
-                  styles.segmentFill,
-                  scheduleMode !== 'now' && styles.segmentFillHidden,
-                ]}
-              />
               <Text
                 style={[
                   styles.segmentBtnText,
@@ -506,13 +510,6 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
               activeOpacity={0.85}
               onPress={() => setScheduleMode('later')}
             >
-              <LinearGradient
-                {...GRADIENTS.brand}
-                style={[
-                  styles.segmentFill,
-                  scheduleMode !== 'later' && styles.segmentFillHidden,
-                ]}
-              />
               <Text
                 style={[
                   styles.segmentBtnText,
@@ -1029,16 +1026,10 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
-    overflow: 'hidden',
   },
-  segmentFill: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  segmentFillHidden: {
-    opacity: 0,
-  },
-  // Selected segment.
+  // Selected segment – solid background works reliably on both Android and web.
   segmentBtnActive: {
+    backgroundColor: ACCENT.blue,
     ...ELEVATION.xs,
   },
   segmentBtnText: {

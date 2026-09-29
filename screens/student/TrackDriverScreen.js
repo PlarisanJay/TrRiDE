@@ -1,15 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  Alert,
-  ActivityIndicator,
-  ScrollView,
-  Linking,
-  Platform,
-} from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView, Linking, Platform } from 'react-native';
+import { alertDialog, notifyDialog } from '../../lib/dialog';
 import { MaterialIcons } from '@expo/vector-icons';
 import {
   COLORS,
@@ -27,6 +18,7 @@ import { getTripById, subscribeToTrip, cancelTripWithReason } from '../../data/t
 import { getProfileById } from '../../data/auth';
 import { supabase } from '../../config/supabase';
 import MapPreview from '../../components/MapPreview';
+import { useWideWeb, wideMapStyles } from '../../lib/webLayout';
 import UserAvatar from '../../components/UserAvatar';
 import CancelRideModal from '../../components/CancelRideModal';
 
@@ -45,6 +37,7 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
   const [showCancelModal, setShowCancelModal] = useState(false);
 
   const mapRef = useRef(null);
+  const isWideWeb = useWideWeb();
   const hasHandledCancelRef = useRef(false);
 
   useEffect(() => {
@@ -72,12 +65,13 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
       if (updated?.status === 'cancelled' && !hasHandledCancelRef.current) {
         hasHandledCancelRef.current = true;
         setShowCancelModal(false);
-        Alert.alert(
-          'Ride Cancelled',
-          'This ride has been cancelled and terminated.' +
+        await notifyDialog({
+          title: 'Ride Cancelled',
+          message:
+            'This ride has been cancelled and terminated.' +
             (updated.notes ? `\n\n${updated.notes}` : ''),
-          [{ text: 'OK', onPress: onCancelTrip }]
-        );
+        });
+        onCancelTrip();
       }
     });
 
@@ -213,19 +207,20 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
   const handleCall = () => {
     if (driver?.phone) {
       Linking.openURL(`tel:${driver.phone}`).catch(() => {
-        Alert.alert('Cannot Call', 'Unable to open phone dialer.');
+        alertDialog({ title: 'Cannot Call', message: 'Unable to open phone dialer.' });
       });
     } else {
-      Alert.alert('No Phone Number', 'The driver has not provided a phone number.');
+      alertDialog({ title: 'No Phone Number', message: 'The driver has not provided a phone number.' });
     }
   };
 
   const handleCancelPress = () => {
     if (trip?.status === 'in_progress') {
-      Alert.alert(
-        'Ride in Progress',
-        'This ride is currently active and in progress. Rides cannot be cancelled while on the road. Please reach your destination safely.'
-      );
+      alertDialog({
+        title: 'Ride in Progress',
+        message:
+          'This ride is currently active and in progress. Rides cannot be cancelled while on the road. Please reach your destination safely.',
+      });
       return;
     }
     setShowCancelModal(true);
@@ -241,14 +236,14 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
         reason,
       });
       setShowCancelModal(false);
-      Alert.alert(
-        'Ride Cancelled',
-        'Your ride request has been cancelled and terminated.',
-        [{ text: 'OK', onPress: onCancelTrip }]
-      );
+      await notifyDialog({
+        title: 'Ride Cancelled',
+        message: 'Your ride request has been cancelled and terminated.',
+      });
+      onCancelTrip();
     } catch (e) {
       hasHandledCancelRef.current = false;
-      Alert.alert('Cannot Cancel', e?.message || 'Could not cancel trip.');
+      alertDialog({ title: 'Cannot Cancel', message: e?.message || 'Could not cancel trip.' });
     } finally {
       setCancelling(false);
     }
@@ -274,7 +269,7 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
   return (
     <View style={styles.container}>
       {/* Top Map Section - Identical Placement to BookRideScreen */}
-      <View style={styles.mapSection}>
+      <View style={[styles.mapSection, isWideWeb && wideMapStyles.mapSection]}>
         <MapPreview
           ref={mapRef}
           region={{
@@ -290,7 +285,7 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
         />
 
         {/* Floating Header */}
-        <View style={styles.floatingHeaderArea} pointerEvents="box-none">
+        <View style={[styles.floatingHeaderArea, isWideWeb && wideMapStyles.floatingHeaderArea]} pointerEvents="box-none">
           <TouchableOpacity style={styles.floatingBackBtn} activeOpacity={0.85} onPress={() => onNavigate('StudentDashboard')}>
             <MaterialIcons name="arrow-back" size={22} color={INK.body} />
           </TouchableOpacity>
@@ -316,7 +311,7 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
       </View>
 
       {/* Bottom Sheet Card Container */}
-      <View style={styles.sheetContainer}>
+      <View style={[styles.sheetContainer, isWideWeb && wideMapStyles.sheetContainer]}>
         <View style={styles.dragHandleTouchArea}>
           <View style={styles.dragHandle} />
         </View>

@@ -67,6 +67,7 @@ const MapPreview = forwardRef(function MapPreview(
         lng: activeLng,
         zoom,
         scrollEnabled,
+        wheelZoom: Platform.OS === 'web',
         markers: leafletMarkers,
         route: routeCoordinates,
         durationText,
@@ -185,22 +186,24 @@ const MapPreview = forwardRef(function MapPreview(
     }
   }, [onRegionChangeComplete, onMapPress]);
 
-  const WebViewComp = !useStaticFallback ? getWebViewComponent() : null;
+  const isWeb = Platform.OS === 'web';
+  const WebViewComp = !isWeb && !useStaticFallback ? getWebViewComponent() : null;
+  const useStatic = useStaticFallback || (!isWeb && !WebViewComp);
 
   return (
     <>
       <View style={[styles.container, style]}>
-        {useStaticFallback || !WebViewComp ? (
+        {useStatic ? (
           <Image
             source={{ uri: staticMapUrl }}
             style={styles.staticImage}
             resizeMode="cover"
           />
-        ) : Platform.OS === 'web' ? (
+        ) : isWeb ? (
           <iframe
             ref={iframeRef}
             srcDoc={htmlSource.html}
-            style={{ width: '100%', height: '100%', border: 'none', backgroundColor: '#f1f5f9' }}
+            style={styles.iframe}
             title="Map Preview"
             onLoad={onWebViewLoad}
           />
@@ -244,12 +247,12 @@ const MapPreview = forwardRef(function MapPreview(
         <Modal visible={fullscreen} animationType="slide" onRequestClose={() => setFullscreen(false)}>
           <View style={styles.fullscreenContainer}>
             <StatusBar hidden />
-            {useStaticFallback || !WebViewComp ? (
+            {useStatic ? (
               <Image source={{ uri: staticMapUrl }} style={styles.staticImage} resizeMode="cover" />
-            ) : Platform.OS === 'web' ? (
+            ) : isWeb ? (
               <iframe
                 srcDoc={htmlSource.html}
-                style={{ width: '100%', height: '100%', border: 'none', backgroundColor: '#f1f5f9' }}
+                style={styles.iframe}
                 title="Fullscreen Map"
               />
             ) : (
@@ -285,6 +288,17 @@ const styles = StyleSheet.create({
   },
   webview: {
     flex: 1,
+    backgroundColor: '#f1f5f9',
+  },
+  iframe: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: '100%',
+    height: '100%',
+    borderWidth: 0,
+    borderStyle: 'solid',
+    borderColor: 'transparent',
     backgroundColor: '#f1f5f9',
   },
   staticImage: {

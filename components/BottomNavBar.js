@@ -11,19 +11,9 @@ import {
   ACCENT,
   BORDERS,
 } from '../theme';
-
-const STUDENT_TABS = [
-  { key: 'StudentDashboard', icon: 'home', label: 'Home' },
-  { key: 'MyOrders', icon: 'receipt-long', label: 'Orders' },
-  { key: 'Messages', icon: 'chat', label: 'Messages' },
-  { key: 'Profile', icon: 'person', label: 'Profile' },
-];
-
-const DRIVER_TABS = [
-  { key: 'DriverDashboard', icon: 'home', label: 'Home' },
-  { key: 'Messages', icon: 'chat', label: 'Messages' },
-  { key: 'Profile', icon: 'person', label: 'Profile' },
-];
+// Tab lists moved to lib/nav.js so the desktop rail (components/AppSidebar.js)
+// and this bar cannot drift apart. This file's behaviour is unchanged.
+import { STUDENT_TABS, tabsForRole } from '../lib/nav';
 
 const INDICATOR_W = 40;
 
@@ -119,7 +109,7 @@ export default function BottomNavBar({
   hasUnreadMessages = false,
 }) {
   const isDriver = userRole === 'driver';
-  const tabs = isDriver ? DRIVER_TABS : STUDENT_TABS;
+  const tabs = tabsForRole(userRole);
   const showBadge = (unreadMessagesCount > 0 || hasUnreadMessages) && currentScreen !== 'Messages';
 
   // Measured tab positions, so the indicator can slide to the real slot

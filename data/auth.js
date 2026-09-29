@@ -74,13 +74,37 @@ export const signUp = async ({
   return data;
 };
 
-const withTimeout = (promise, timeoutMs = 8000, errorMsg = 'Request timed out') => {
+const withTimeout = (promise, timeoutMs = 20000, errorMsg = 'Request timed out') => {
   return Promise.race([
     promise,
     new Promise((_, reject) =>
       setTimeout(() => reject(new Error(errorMsg)), timeoutMs)
     ),
   ]);
+};
+
+// Retry a factory function up to `retries` times on network/timeout errors.
+// Uses a factory (not a Promise) so each attempt creates a fresh request —
+// a Promise that already timed out cannot be retried.
+const withRetry = async (factory, { retries = 2, timeoutMs = 20000, errorMsg = 'Request timed out', delayMs = 1000 } = {}) => {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await withTimeout(factory(), timeoutMs, errorMsg);
+    } catch (err) {
+      lastErr = err;
+      const isNetworkError =
+        err?.message?.includes('timed out') ||
+        err?.message?.includes('fetch') ||
+        err?.message?.includes('network') ||
+        err?.message?.includes('Failed to fetch') ||
+        err?.message?.includes('NetworkError');
+      // Only retry on network / timeout errors, not auth errors
+      if (!isNetworkError || attempt >= retries) break;
+      await new Promise((res) => setTimeout(res, delayMs * (attempt + 1)));
+    }
+  }
+  throw lastErr;
 };
 
 // ── Auth: Sign In (Allows Username OR Gmail) ───────────────────
@@ -90,14 +114,13 @@ export const signIn = async ({ email, identifier, password }) => {
 
   // If user entered a username (does not contain '@')
   if (!loginInput.includes('@')) {
-    const { data: userProfile, error: profileErr } = await withTimeout(
-      supabase
+    const { data: userProfile, error: profileErr } = await withRetry(
+      () => supabase
         .from('profiles')
         .select('email')
         .ilike('username', loginInput)
         .maybeSingle(),
-      5000,
-      'Username lookup timed out'
+      { timeoutMs: 15000, errorMsg: 'Username lookup timed out', retries: 2 }
     ).catch(() => ({ data: null, error: null }));
 
     if (profileErr) {
@@ -114,13 +137,17 @@ export const signIn = async ({ email, identifier, password }) => {
 
   resolvedEmail = resolvedEmail.toLowerCase().trim();
 
-  const { data: authData, error: authError } = await withTimeout(
-    supabase.auth.signInWithPassword({
+  const { data: authData, error: authError } = await withRetry(
+    () => supabase.auth.signInWithPassword({
       email: resolvedEmail,
       password,
     }),
-    8000,
-    'Login timed out. Please check your internet connection and try again.'
+    {
+      timeoutMs: 25000,
+      errorMsg: 'Login timed out. Please check your internet connection and try again.',
+      retries: 2,
+      delayMs: 1500,
+    }
   );
 
   if (authError) throw authError;
@@ -154,7 +181,7 @@ export const getCurrentSession = async () => {
   try {
     const { data: { session }, error } = await withTimeout(
       supabase.auth.getSession(),
-      4000,
+      10000,
       'Get session timed out'
     );
     if (error) throw error;
@@ -176,7 +203,7 @@ export const getCurrentProfile = async (sessionParam = null) => {
         .select('*')
         .eq('id', session.user.id)
         .maybeSingle(),
-      5000,
+      12000,
       'Profile fetch timed out'
     );
 
@@ -415,7 +442,18 @@ export const uploadAvatar = async (userId, imageUri, base64Data = null) => {
     const fileExt = (imageUri && typeof imageUri === 'string')
       ? imageUri.split('.').pop()?.split('?')[0] || 'jpg'
       : 'jpg';
-    const filePath = `avatars/${userId}_${Date.now()}.${fileExt}`;
+    // Object key is <userId>/<timestamp>.<ext>. The first path segment must
+    // be the uploader's own uid: the storage write policies in
+    // supabase/migration_security_web.sql enforce
+    //     (storage.foldername(name))[1] = auth.uid()::text
+    // The previous key was `avatars/<userId>_<ts>.<ext>`, whose first
+    // segment was the literal "avatars", so the database now rejects it.
+    // The uid was only a filename prefix there, which is not a real scope —
+    // any user could have written to any other user's prefix.
+    //
+    // This key is relative to the bucket (passed via .from(bucketName)
+    // below), so it correctly does NOT repeat the bucket name.
+    const filePath = `${userId}/${Date.now()}.${fileExt}`;
     const contentType = `image/${fileExt.toLowerCase() === 'png' ? 'png' : 'jpeg'}`;
 
     // Try uploading to 'avatars' bucket first; if missing, fallback to 'message' bucket

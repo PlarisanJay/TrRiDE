@@ -1,15 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  Alert,
-  ActivityIndicator,
-  ScrollView,
-  Linking,
-  Platform,
-} from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView, Linking, Platform } from 'react-native';
+import { alertDialog, notifyDialog } from '../../lib/dialog';
 import { MaterialIcons } from '@expo/vector-icons';
 import {
   COLORS,
@@ -30,6 +21,7 @@ import { supabase } from '../../config/supabase';
 import MapPreview from '../../components/MapPreview';
 import UserAvatar from '../../components/UserAvatar';
 import CancelRideModal from '../../components/CancelRideModal';
+import { useWideWeb, wideMapStyles } from '../../lib/webLayout';
 
 export default function OrderDetailsScreen({ userProfile, tripId, onGoBack, onNavigate }) {
   const [trip, setTrip] = useState(null);
@@ -48,6 +40,7 @@ export default function OrderDetailsScreen({ userProfile, tripId, onGoBack, onNa
   const [showCancelModal, setShowCancelModal] = useState(false);
 
   const mapRef = useRef(null);
+  const isWideWeb = useWideWeb();
   const hasHandledCancelRef = useRef(false);
 
   // Load trip and driver data
@@ -105,12 +98,15 @@ export default function OrderDetailsScreen({ userProfile, tripId, onGoBack, onNa
       if (updated.status === 'cancelled' && !hasHandledCancelRef.current) {
         hasHandledCancelRef.current = true;
         setShowCancelModal(false);
-        Alert.alert(
-          'Ride Cancelled',
-          'This ride has been cancelled and terminated.' +
+        // Navigate away immediately — dialog persists in the global queue
+        // and will render on the home screen without blocking navigation.
+        onGoBack();
+        notifyDialog({
+          title: 'Ride Cancelled',
+          message:
+            'This ride has been cancelled and terminated.' +
             (updated.notes ? `\n\n${updated.notes}` : ''),
-          [{ text: 'OK', onPress: onGoBack }]
-        );
+        });
       }
     });
 
@@ -269,10 +265,10 @@ export default function OrderDetailsScreen({ userProfile, tripId, onGoBack, onNa
   const handleCall = () => {
     if (driver?.phone) {
       Linking.openURL(`tel:${driver.phone}`).catch(() => {
-        Alert.alert('Cannot Call', 'Unable to open phone dialer.');
+        alertDialog({ title: 'Cannot Call', message: 'Unable to open phone dialer.' });
       });
     } else {
-      Alert.alert('No Phone Number', 'The driver has not provided a phone number.');
+      alertDialog({ title: 'No Phone Number', message: 'The driver has not provided a phone number.' });
     }
   };
 
@@ -289,7 +285,7 @@ export default function OrderDetailsScreen({ userProfile, tripId, onGoBack, onNa
       setSubmittedRating(stars);
     } catch (e) {
       console.warn('Could not submit rating:', e.message);
-      Alert.alert('Error', 'Could not submit rating. Please try again.');
+      alertDialog({ title: 'Error', message: 'Could not submit rating. Please try again.' });
     } finally {
       setSubmitting(false);
     }
@@ -297,10 +293,11 @@ export default function OrderDetailsScreen({ userProfile, tripId, onGoBack, onNa
 
   const handleCancelPress = () => {
     if (trip?.status === 'in_progress') {
-      Alert.alert(
-        'Ride in Progress',
-        'This ride is currently active and in progress. Rides cannot be cancelled while on the road. Please reach your destination safely.'
-      );
+      alertDialog({
+        title: 'Ride in Progress',
+        message:
+          'This ride is currently active and in progress. Rides cannot be cancelled while on the road. Please reach your destination safely.',
+      });
       return;
     }
     setShowCancelModal(true);
@@ -316,14 +313,15 @@ export default function OrderDetailsScreen({ userProfile, tripId, onGoBack, onNa
         reason,
       });
       setShowCancelModal(false);
-      Alert.alert(
-        'Ride Cancelled',
-        'Your ride request has been cancelled and terminated.',
-        [{ text: 'OK', onPress: onGoBack }]
-      );
+      // Navigate immediately — dialog renders on the home screen.
+      onGoBack();
+      notifyDialog({
+        title: 'Ride Cancelled',
+        message: 'Your ride request has been cancelled and terminated.',
+      });
     } catch (e) {
       hasHandledCancelRef.current = false;
-      Alert.alert('Cannot Cancel', e?.message || 'Could not cancel trip. It may already be in progress.');
+      alertDialog({ title: 'Cannot Cancel', message: e?.message || 'Could not cancel trip. It may already be in progress.' });
     } finally {
       setCancelling(false);
     }
@@ -351,7 +349,7 @@ export default function OrderDetailsScreen({ userProfile, tripId, onGoBack, onNa
   return (
     <View style={styles.container}>
       {/* Top Map Section - Identical Placement to BookRideScreen */}
-      <View style={styles.mapSection}>
+      <View style={[styles.mapSection, isWideWeb && wideMapStyles.mapSection]}>
         <MapPreview
           ref={mapRef}
           region={{
@@ -367,7 +365,7 @@ export default function OrderDetailsScreen({ userProfile, tripId, onGoBack, onNa
         />
 
         {/* Floating Header */}
-        <View style={styles.floatingHeaderArea} pointerEvents="box-none">
+        <View style={[styles.floatingHeaderArea, isWideWeb && wideMapStyles.floatingHeaderArea]} pointerEvents="box-none">
           <TouchableOpacity style={styles.floatingBackBtn} activeOpacity={0.85} onPress={onGoBack}>
             <MaterialIcons name="arrow-back" size={22} color={INK.body} />
           </TouchableOpacity>
@@ -393,7 +391,7 @@ export default function OrderDetailsScreen({ userProfile, tripId, onGoBack, onNa
       </View>
 
       {/* Bottom Sheet Card Container */}
-      <View style={styles.sheetContainer}>
+      <View style={[styles.sheetContainer, isWideWeb && wideMapStyles.sheetContainer]}>
         <View style={styles.dragHandleTouchArea}>
           <View style={styles.dragHandle} />
         </View>

@@ -1,20 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  Image,
-  TouchableOpacity,
-  TextInput,
-  KeyboardAvoidingView,
-  Platform,
-  FlatList,
-  ActivityIndicator,
-  BackHandler,
-  Linking,
-  Alert,
-  Modal,
-} from 'react-native';
+import { View, Text, StyleSheet, Image, TouchableOpacity, TextInput, KeyboardAvoidingView, Platform, FlatList, ActivityIndicator, BackHandler, Linking, Modal } from 'react-native';
+import { alertDialog, confirmDialog, notifyDialog } from '../../lib/dialog';
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
@@ -312,9 +298,7 @@ export default function MessagesScreen({ userRole, userProfile, tripId, onBack, 
 
       if (!savedMsg) {
         rollback();
-        Alert.alert('Message not sent', 'Check your connection and try again.', [
-          { text: 'OK' },
-        ]);
+        notifyDialog({ title: 'Message not sent', message: 'Check your connection and try again.' });
         return;
       }
 
@@ -343,9 +327,7 @@ export default function MessagesScreen({ userRole, userProfile, tripId, onBack, 
       );
     } catch (e) {
       rollback();
-      Alert.alert('Message not sent', 'Check your connection and try again.', [
-        { text: 'OK' },
-      ]);
+      notifyDialog({ title: 'Message not sent', message: 'Check your connection and try again.' });
     }
   };
 
@@ -393,27 +375,22 @@ export default function MessagesScreen({ userRole, userProfile, tripId, onBack, 
                   style={[styles.convCard, isUnread && styles.convCardUnread]}
                   activeOpacity={0.8}
                   onPress={() => openChatThread(item)}
-                  onLongPress={() => {
-                    Alert.alert(
-                      'Delete Conversation',
-                      `Are you sure you want to delete conversation with ${name}?`,
-                      [
-                        { text: 'Cancel', style: 'cancel' },
-                        {
-                          text: 'Delete',
-                          style: 'destructive',
-                          onPress: async () => {
-                            const ok = await deleteConversation(item.id);
-                            if (ok) {
-                              setConversations((prev) => prev.filter((c) => c.id !== item.id));
-                              Alert.alert('Deleted', 'Conversation deleted.');
-                            } else {
-                              Alert.alert('Error', 'Could not delete conversation.');
-                            }
-                          },
-                        },
-                      ]
-                    );
+                  onLongPress={async () => {
+                    const confirmed = await confirmDialog({
+                      title: 'Delete Conversation',
+                      message: `Are you sure you want to delete conversation with ${name}?`,
+                      confirmText: 'Delete',
+                      cancelText: 'Cancel',
+                      destructive: true,
+                    });
+                    if (!confirmed) return;
+                    const ok = await deleteConversation(item.id);
+                    if (ok) {
+                      setConversations((prev) => prev.filter((c) => c.id !== item.id));
+                      alertDialog({ title: 'Deleted', message: 'Conversation deleted.' });
+                    } else {
+                      alertDialog({ title: 'Error', message: 'Could not delete conversation.' });
+                    }
                   }}
                 >
                   <View style={styles.avatarWrapper}>
@@ -511,10 +488,10 @@ export default function MessagesScreen({ userRole, userProfile, tripId, onBack, 
               const phone = selectedConv?.partner_phone;
               if (phone) {
                 Linking.openURL(`tel:${phone}`).catch(() => {
-                  Alert.alert('Cannot Call', 'Unable to open phone dialer.');
+                  alertDialog({ title: 'Cannot Call', message: 'Unable to open phone dialer.' });
                 });
               } else {
-                Alert.alert('No Phone Number', 'This user has not added their phone number yet.');
+                alertDialog({ title: 'No Phone Number', message: 'This user has not added their phone number yet.' });
               }
             }}
           >
@@ -601,7 +578,7 @@ export default function MessagesScreen({ userRole, userProfile, tripId, onBack, 
               try {
                 const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
                 if (status !== 'granted') {
-                  Alert.alert('Permission Required', 'Allow gallery access to select images.');
+                  alertDialog({ title: 'Permission Required', message: 'Allow gallery access to select images.' });
                   return;
                 }
                 const result = await ImagePicker.launchImageLibraryAsync({
@@ -677,24 +654,23 @@ export default function MessagesScreen({ userRole, userProfile, tripId, onBack, 
             {/* Delete Message Action */}
             <TouchableOpacity
               style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 }}
-              onPress={() => {
+              onPress={async () => {
                 const msgIdToDelete = reactionTarget;
                 setReactionTarget(null);
-                Alert.alert('Delete Message', 'Are you sure you want to delete this message?', [
-                  { text: 'Cancel', style: 'cancel' },
-                  {
-                    text: 'Delete',
-                    style: 'destructive',
-                    onPress: async () => {
-                      const ok = await deleteMessage(msgIdToDelete);
-                      if (ok) {
-                        setMessages((prev) => prev.filter((m) => m.id !== msgIdToDelete));
-                      } else {
-                        Alert.alert('Error', 'Could not delete message.');
-                      }
-                    },
-                  },
-                ]);
+                const confirmed = await confirmDialog({
+                  title: 'Delete Message',
+                  message: 'Are you sure you want to delete this message?',
+                  confirmText: 'Delete',
+                  cancelText: 'Cancel',
+                  destructive: true,
+                });
+                if (!confirmed) return;
+                const ok = await deleteMessage(msgIdToDelete);
+                if (ok) {
+                  setMessages((prev) => prev.filter((m) => m.id !== msgIdToDelete));
+                } else {
+                  alertDialog({ title: 'Error', message: 'Could not delete message.' });
+                }
               }}
             >
               <MaterialIcons name="delete" size={20} color={COLORS.error} />
@@ -739,7 +715,18 @@ export default function MessagesScreen({ userRole, userProfile, tripId, onBack, 
                       throw new Error('Selected image could not be read.');
                     }
                     const fileExt = imageUri.split('.').pop()?.split('?')[0] || 'jpg';
-                    const filePath = `chat/${Date.now()}_${Math.random().toString(36).slice(2)}.${fileExt}`;
+                    // Leading folder MUST be the sender's own uid: the storage
+                    // write policies in supabase/migration_security_web.sql
+                    // enforce (storage.foldername(name))[1] = auth.uid()::text
+                    // The previous key was `chat/<ts>_<rand>.<ext>`, whose first
+                    // segment was the literal "chat" and which contained no user
+                    // id anywhere, so the database now rejects it. This is what
+                    // stopped anonymous users overwriting each other's media.
+                    //
+                    // The key is relative to the bucket (passed via
+                    // .from(targetBucket) below), so it correctly does NOT
+                    // repeat the bucket name.
+                    const filePath = `${currentUserId}/${Date.now()}_${Math.random().toString(36).slice(2)}.${fileExt}`;
                     const contentType = `image/${fileExt === 'png' ? 'png' : 'jpeg'}`;
 
                     let targetBucket = 'chat-media';
@@ -783,7 +770,7 @@ export default function MessagesScreen({ userRole, userProfile, tripId, onBack, 
                     setPendingImageBase64(null);
                   } catch (e) {
                     console.warn('Image send failed:', e.message);
-                    Alert.alert('Upload Failed', 'Could not send image. Please try again.');
+                    alertDialog({ title: 'Upload Failed', message: 'Could not send image. Please try again.' });
                   } finally {
                     setUploadingImage(false);
                   }

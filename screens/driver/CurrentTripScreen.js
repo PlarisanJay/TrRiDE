@@ -1,20 +1,12 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  Alert,
-  ActivityIndicator,
-  Linking,
-  ScrollView,
-  Platform,
-} from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Linking, ScrollView, Platform } from 'react-native';
+import { alertDialog, notifyDialog } from '../../lib/dialog';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { COLORS, TYPOGRAPHY, SPACING, ROUNDED, SHADOWS } from '../../theme';
 import { TOLEDO_CITY, fetchRoute, haversineDistance, formatDistanceText, formatDurationText } from '../../config/mapConfig';
 import MapPreview from '../../components/MapPreview';
+import { useWideWeb, wideMapStyles } from '../../lib/webLayout';
 import { getTripById, subscribeToTrip, startTrip, completeTrip, cancelTripWithReason } from '../../data/trips';
 import { getProfileById } from '../../data/auth';
 import { saveCancelledTrip } from '../../data/cancelledTripsStore';
@@ -37,6 +29,7 @@ export default function CurrentTripScreen({ userProfile, tripId, onTripCompleted
   const [acting, setActing] = useState(false);
 
   const mapRef = useRef(null);
+  const isWideWeb = useWideWeb();
   const hasHandledCancelRef = useRef(false);
 
   useEffect(() => {
@@ -75,12 +68,13 @@ export default function CurrentTripScreen({ userProfile, tripId, onTripCompleted
       if (updated?.status === 'cancelled' && !hasHandledCancelRef.current) {
         hasHandledCancelRef.current = true;
         setShowCancelModal(false);
-        Alert.alert(
-          'Ride Cancelled',
-          'The student has cancelled this ride request.' +
+        await notifyDialog({
+          title: 'Ride Cancelled',
+          message:
+            'The student has cancelled this ride request.' +
             (updated.notes ? `\n\n${updated.notes}` : ''),
-          [{ text: 'OK', onPress: onCancelTrip }]
-        );
+        });
+        onCancelTrip();
       }
     });
 
@@ -260,15 +254,19 @@ export default function CurrentTripScreen({ userProfile, tripId, onTripCompleted
     try {
       if (trip.status === 'accepted') {
         await startTrip(tripId);
-        Alert.alert('Trip Started', 'Passenger picked up. Heading to destination.');
+        alertDialog({ title: 'Trip Started', message: 'Passenger picked up. Heading to destination.' });
       } else if (trip.status === 'in_progress') {
         await completeTrip(tripId);
         onTripCompleted();
       }
     } catch (e) {
-      Alert.alert('Error', trip.status === 'accepted'
-        ? 'Could not start trip.'
-        : 'Could not complete trip.');
+      alertDialog({
+        title: 'Error',
+        message:
+          trip.status === 'accepted'
+            ? 'Could not start trip.'
+            : 'Could not complete trip.',
+      });
     } finally {
       setActing(false);
     }
@@ -276,10 +274,11 @@ export default function CurrentTripScreen({ userProfile, tripId, onTripCompleted
 
   const handleCancelPress = () => {
     if (trip?.status === 'in_progress') {
-      Alert.alert(
-        'Ride in Progress',
-        'You have already started this ride. Rides cannot be cancelled while in progress. Please complete the trip or reach the drop-off safely.'
-      );
+      alertDialog({
+        title: 'Ride in Progress',
+        message:
+          'You have already started this ride. Rides cannot be cancelled while in progress. Please complete the trip or reach the drop-off safely.',
+      });
       return;
     }
     setShowCancelModal(true);
@@ -296,14 +295,14 @@ export default function CurrentTripScreen({ userProfile, tripId, onTripCompleted
       });
       if (trip) saveCancelledTrip(trip);
       setShowCancelModal(false);
-      Alert.alert(
-        'Ride Cancelled',
-        'You have cancelled this ride request and it has been terminated.',
-        [{ text: 'OK', onPress: onCancelTrip }]
-      );
+      await notifyDialog({
+        title: 'Ride Cancelled',
+        message: 'You have cancelled this ride request and it has been terminated.',
+      });
+      onCancelTrip();
     } catch (e) {
       hasHandledCancelRef.current = false;
-      Alert.alert('Cannot Cancel', e?.message || 'Could not cancel trip.');
+      alertDialog({ title: 'Cannot Cancel', message: e?.message || 'Could not cancel trip.' });
     } finally {
       setCancelling(false);
     }
@@ -312,10 +311,10 @@ export default function CurrentTripScreen({ userProfile, tripId, onTripCompleted
   const handleCall = () => {
     if (student?.phone) {
       Linking.openURL(`tel:${student.phone}`).catch(() => {
-        Alert.alert('Cannot Call', 'Unable to open phone dialer.');
+        alertDialog({ title: 'Cannot Call', message: 'Unable to open phone dialer.' });
       });
     } else {
-      Alert.alert('No Phone Number', 'The passenger has not provided a phone number.');
+      alertDialog({ title: 'No Phone Number', message: 'The passenger has not provided a phone number.' });
     }
   };
 
@@ -339,7 +338,7 @@ export default function CurrentTripScreen({ userProfile, tripId, onTripCompleted
   return (
     <View style={styles.container}>
       {/* Top Map Section */}
-      <View style={styles.mapSection}>
+      <View style={[styles.mapSection, isWideWeb && wideMapStyles.mapSection]}>
         <MapPreview
           ref={mapRef}
           region={{
@@ -355,7 +354,7 @@ export default function CurrentTripScreen({ userProfile, tripId, onTripCompleted
         />
 
         {/* Floating Header */}
-        <View style={styles.floatingHeaderArea} pointerEvents="box-none">
+        <View style={[styles.floatingHeaderArea, isWideWeb && wideMapStyles.floatingHeaderArea]} pointerEvents="box-none">
           <TouchableOpacity style={styles.floatingBackBtn} activeOpacity={0.85} onPress={() => onNavigate('Home')}>
             <MaterialIcons name="arrow-back" size={22} color="#1e293b" />
           </TouchableOpacity>
@@ -383,7 +382,7 @@ export default function CurrentTripScreen({ userProfile, tripId, onTripCompleted
       </View>
 
       {/* Bottom Sheet Card */}
-      <View style={styles.sheetContainer}>
+      <View style={[styles.sheetContainer, isWideWeb && wideMapStyles.sheetContainer]}>
         <View style={styles.dragHandleTouchArea}>
           <View style={styles.dragHandle} />
         </View>

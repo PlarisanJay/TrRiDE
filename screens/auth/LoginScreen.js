@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, KeyboardAvoidingView, Alert } from 'react-native';
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, KeyboardAvoidingView } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { COLORS, TYPOGRAPHY, SPACING, ROUNDED, SHADOWS } from '../../theme';
+import { alertDialog } from '../../lib/dialog';
 import { signIn, resetPassword } from '../../data/auth';
 import TriRideTextLogo from '../../components/TriRideTextLogo';
 
@@ -19,10 +20,10 @@ export default function LoginScreen({ onLoginSuccess, onSignUp }) {
     }
     try {
       const targetEmail = await resetPassword(identifier.trim());
-      Alert.alert(
-        'Check Your Gmail',
-        `A password reset confirmation link has been sent to your registered Gmail address: ${targetEmail}`
-      );
+      alertDialog({
+        title: 'Check Your Gmail',
+        message: `A password reset confirmation link has been sent to your registered Gmail address: ${targetEmail}`,
+      });
     } catch (e) {
       setError(e.message || 'Failed to send reset email. Please try again.');
     }

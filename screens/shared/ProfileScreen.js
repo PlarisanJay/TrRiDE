@@ -1,17 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  Image,
-  TouchableOpacity,
-  ScrollView,
-  TextInput,
-  Modal,
-  Alert,
-  ActivityIndicator,
-  KeyboardAvoidingView,
-} from 'react-native';
+import { View, Text, StyleSheet, Image, TouchableOpacity, ScrollView, TextInput, Modal, ActivityIndicator, KeyboardAvoidingView } from 'react-native';
+import { alertDialog } from '../../lib/dialog';
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
@@ -36,7 +25,7 @@ export default function ProfileScreen({ userRole, userProfile, onLogout, onBack,
 
   const [profile, setProfile] = useState(userProfile || {});
   const [showEditModal, setShowEditModal] = useState(false);
-  const [profileStats, setProfileStats] = useState({ totalRides: 0, rating: '—' });
+  const [profileStats, setProfileStats] = useState({ totalRides: 0, rating: 'â€”' });
 
   // Edit form state
   const [fullNameInput, setFullNameInput] = useState(profile?.full_name || (isStudent ? 'Student User' : 'Driver User'));
@@ -74,10 +63,10 @@ export default function ProfileScreen({ userRole, userProfile, onLogout, onBack,
       try {
         if (isStudent) {
           const stats = await getStudentTripStats(userProfile?.id);
-          if (mounted) setProfileStats({ totalRides: stats.totalRides, rating: '—' });
+          if (mounted) setProfileStats({ totalRides: stats.totalRides, rating: 'â€”' });
         } else {
           const stats = await getDriverStats(userProfile?.id);
-          if (mounted) setProfileStats({ totalRides: stats.completedRides, rating: '—' });
+          if (mounted) setProfileStats({ totalRides: stats.completedRides, rating: 'â€”' });
         }
       } catch (e) {
         console.warn('Could not load profile stats:', e.message);
@@ -99,7 +88,10 @@ export default function ProfileScreen({ userRole, userProfile, onLogout, onBack,
     try {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Permission Required', 'Please allow access to your photo gallery to change your profile picture.');
+        alertDialog({
+          title: 'Permission Required',
+          message: 'Please allow access to your photo gallery to change your profile picture.',
+        });
         return;
       }
 
@@ -124,12 +116,15 @@ export default function ProfileScreen({ userRole, userProfile, onLogout, onBack,
             const newProf = { ...profile, avatar_url: publicUrl };
             setProfile(newProf);
             if (onProfileUpdated) onProfileUpdated(newProf);
-            Alert.alert('Success', 'Profile photo updated!');
+            alertDialog({ title: 'Success', message: 'Profile photo updated!' });
           } catch (e) {
             console.warn('Upload failed:', e.message);
             // Fallback: just set the local URI
             setAvatarUrlInput(imageUri);
-            Alert.alert('Upload Failed', 'Photo saved locally. Make sure the storage migration SQL has been run in Supabase.');
+            alertDialog({
+              title: 'Upload Failed',
+              message: 'Photo saved locally. Make sure the storage migration SQL has been run in Supabase.',
+            });
           } finally {
             setUploadingAvatar(false);
           }
@@ -154,7 +149,7 @@ export default function ProfileScreen({ userRole, userProfile, onLogout, onBack,
 
   const handleSaveProfile = async () => {
     if (!fullNameInput.trim()) {
-      Alert.alert('Error', 'Full name cannot be empty.');
+      alertDialog({ title: 'Error', message: 'Full name cannot be empty.' });
       return;
     }
 
@@ -179,7 +174,7 @@ export default function ProfileScreen({ userRole, userProfile, onLogout, onBack,
         if (onProfileUpdated) onProfileUpdated(localProf);
       }
       setShowEditModal(false);
-      Alert.alert('Success', 'Profile updated successfully!');
+      alertDialog({ title: 'Success', message: 'Profile updated successfully!' });
     } catch (e) {
       console.log('Update profile error:', e?.message);
       // Fallback local update
@@ -187,7 +182,7 @@ export default function ProfileScreen({ userRole, userProfile, onLogout, onBack,
       setProfile(localProf);
       if (onProfileUpdated) onProfileUpdated(localProf);
       setShowEditModal(false);
-      Alert.alert('Updated', 'Profile info saved locally.');
+      alertDialog({ title: 'Updated', message: 'Profile info saved locally.' });
     }
     setSaving(false);
   };

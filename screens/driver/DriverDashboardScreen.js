@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, ScrollView, Animated, ActivityIndicator, Alert, Platform } from 'react-native';
+import { View, Text, StyleSheet, Image, TouchableOpacity, ScrollView, Animated, ActivityIndicator, Platform } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { COLORS, TYPOGRAPHY, SPACING, ROUNDED, SHADOWS } from '../../theme';
+import { alertDialog } from '../../lib/dialog';
 import { getPendingTrips, acceptTrip, declineTrip, subscribeToPendingTrips, subscribeToDriverTrips, getTripById, getDriverStats, getTripsByDriver, getDriverActivePassengerCount, MAX_PASSENGERS } from '../../data/trips';
 import { getProfileById } from '../../data/auth';
 import { getOrCreateConversation } from '../../data/messages';
@@ -255,10 +256,10 @@ export default function DriverDashboardScreen({ userProfile, activeTripId, onAcc
 
     // Strict capacity validation
     if (currentCount + needed > MAX_PASSENGERS) {
-      Alert.alert(
-        'Capacity Exceeded',
-        `You currently have ${currentCount}/${MAX_PASSENGERS} passengers. This ride requires ${needed} seat${needed > 1 ? 's' : ''}. Complete a drop-off first.`
-      );
+      alertDialog({
+        title: 'Capacity Exceeded',
+        message: `You currently have ${currentCount}/${MAX_PASSENGERS} passengers. This ride requires ${needed} seat${needed > 1 ? 's' : ''}. Complete a drop-off first.`,
+      });
       setPendingTrips((prev) => prev.filter((t) => t.id !== tripId));
       return;
     }
@@ -304,7 +305,7 @@ export default function DriverDashboardScreen({ userProfile, activeTripId, onAcc
       console.log('handleAccept error:', e?.message);
       clearActiveTrip().catch(() => {});
       loadPendingTrips(false);
-      Alert.alert('Cannot Accept', e?.message || 'Could not accept this trip. Please try again.');
+      alertDialog({ title: 'Cannot Accept', message: e?.message || 'Could not accept this trip. Please try again.' });
     } finally {
       setAcceptingId(null);
     }
@@ -324,7 +325,7 @@ export default function DriverDashboardScreen({ userProfile, activeTripId, onAcc
     } catch (e) {
       console.log('handleDecline error:', e?.message);
       loadPendingTrips(false);
-      Alert.alert('Error', 'Could not decline this trip. Please try again.');
+      alertDialog({ title: 'Error', message: 'Could not decline this trip. Please try again.' });
     } finally {
       setDecliningId(null);
     }

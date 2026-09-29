@@ -100,7 +100,10 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     storage,
     autoRefreshToken: true,
     persistSession: true,
-    detectSessionInUrl: false,
+    // On web, Supabase needs to detect the session from localStorage on page
+    // reload. Setting this false was preventing session restoration after
+    // a browser refresh. We only keep it false on native.
+    detectSessionInUrl: Platform.OS === 'web',
   },
   ...(Platform.OS === 'android' ? { global: { fetch: androidFetchWithRetry } } : {}),
 });

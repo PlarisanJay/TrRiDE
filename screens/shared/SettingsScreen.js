@@ -1,15 +1,9 @@
 import React from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  ScrollView,
-  Switch,
-  Alert,
-} from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Switch } from 'react-native';
+import { alertDialog } from '../../lib/dialog';
 import { MaterialIcons } from '@expo/vector-icons';
 import { COLORS, TYPOGRAPHY, SPACING, ROUNDED, SHADOWS } from '../../theme';
+import { resolveInstallTarget, startInstall } from '../../lib/installApp';
 
 export default function SettingsScreen({ userProfile, onBack }) {
   // These three are intentionally inert. There is no preference store wired up
@@ -24,20 +18,63 @@ export default function SettingsScreen({ userProfile, onBack }) {
     // The app has no cache layer: trips, profiles and messages all come straight
     // from Supabase, and the only on-disk state is the driver's active-trip
     // record (cleared automatically on logout / trip completion).
-    Alert.alert(
-      'Nothing to clear',
-      'TriRide has no offline cache. Your trips and messages load fresh from the server each time, so there is nothing stored on this device to remove.'
-    );
+    alertDialog({
+      title: 'Nothing to clear',
+      message:
+        'TriRide has no offline cache. Your trips and messages load fresh from the server each time, so there is nothing stored on this device to remove.',
+    });
   };
 
+  // The install banner is dismissible, so it cannot be the only place the
+  // option exists. This row is the permanent one. It is omitted entirely on
+  // native (you are already in the app) and on iOS (no APK can run there), so
+  // neither platform grows a dead row.
+  const install = resolveInstallTarget();
+
+  const handleInstall = () => {
+    if (!install.canInstall) {
+      alertDialog({
+        title: 'Installer not configured',
+        message:
+          'The download link has not been set yet. Set EXPO_PUBLIC_APK_URL in .env to the published APK URL, then restart the web bundler.',
+      });
+      return;
+    }
+    startInstall(install.url);
+  };
+
+  const installSections =
+    install.kind === 'apk' || install.kind === 'unconfigured'
+      ? [
+          {
+            title: 'App',
+            items: [
+              {
+                id: 'install',
+                label: 'Install TriRide app',
+                note: install.canInstall
+                  ? 'Full screen on your phone. You will sign in once on the device.'
+                  : 'Download link not configured yet',
+                icon: 'download',
+                type: 'action',
+                onPress: handleInstall,
+              },
+            ],
+          },
+        ]
+      : [];
+
   const settingSections = [
+    // First, not last: the banner that points here is dismissible, so this row
+    // is the only durable way back to the installer.
+    ...installSections,
     {
       title: 'Notifications',
       items: [
         {
           id: 'push',
           label: 'Push Notifications',
-          note: 'Always on — not configurable yet',
+          note: 'Always on â€” not configurable yet',
           icon: 'notifications',
           type: 'toggle',
           value: notificationsEnabled,

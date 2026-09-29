@@ -30,7 +30,7 @@ export function buildStaticMapUrl({ lat, lng, zoom = 15, markers = [], width = 6
   return url;
 }
 
-export function buildLeafletHtml({ lat, lng, zoom, scrollEnabled, markers = [], route = [], durationText = '30 MIN' }) {
+export function buildLeafletHtml({ lat, lng, zoom, scrollEnabled, wheelZoom = false, markers = [], route = [], durationText = '30 MIN' }) {
   const apiKey = GEOAPIFY_API_KEY;
   const tileUrl = `https://maps.geoapify.com/v1/tile/${MAP_STYLE}/{z}/{x}/{y}.png?apiKey=${apiKey}`;
   const markersJson = JSON.stringify(markers || []);
@@ -163,7 +163,7 @@ export function buildLeafletHtml({ lat, lng, zoom, scrollEnabled, markers = [], 
       dragging: ${scrollEnabled !== false ? 'true' : 'false'},
       touchZoom: ${scrollEnabled !== false ? 'true' : 'false'},
       doubleClickZoom: ${scrollEnabled !== false ? 'true' : 'false'},
-      scrollWheelZoom: false,
+      scrollWheelZoom: ${wheelZoom ? 'true' : 'false'},
       preferCanvas: true,
       fadeAnimation: false,
       zoomAnimation: false,
@@ -209,8 +209,21 @@ export function buildLeafletHtml({ lat, lng, zoom, scrollEnabled, markers = [], 
         fitAll();
       }, 200);
       setTimeout(function() {
+        map.invalidateSize();
         fitAll();
       }, 500);
+    });
+
+    if (typeof ResizeObserver !== 'undefined') {
+      var mapEl = document.getElementById('map');
+      if (mapEl) {
+        new ResizeObserver(function() {
+          try { map.invalidateSize(); } catch (e) {}
+        }).observe(mapEl);
+      }
+    }
+    window.addEventListener('resize', function() {
+      try { map.invalidateSize(); } catch (e) {}
     });
 
     function updateRoute(coords) {
@@ -282,11 +295,26 @@ export function buildLeafletHtml({ lat, lng, zoom, scrollEnabled, markers = [], 
           '</div>';
         }
 
+        // Anchor = [horizontal_center, distance_from_top_to_pin_tip]
+        // Container is 130x68. Badge ~26px tall + 4px margin. Pin SVG follows.
+        // Driver pin SVG: 34x42 -> tip at bottom of SVG -> anchorY = 26+4+42 = 72... but
+        // container height is 68, so we set iconSize tall enough and anchor accordingly.
+        var anchorX = 65; // always center
+        var anchorY, iconH;
+        if (isDriver) {
+          // callout badge ~26px + 4px gap + 42px pin SVG = 72px total
+          iconH = 76;
+          anchorY = 76; // pin tip is at very bottom
+        } else {
+          // callout badge ~26px + 4px gap + 38px pin SVG = 68px total
+          iconH = 68;
+          anchorY = 68; // pin tip is at very bottom
+        }
         var icon = L.divIcon({
           className: '',
           html: html,
-          iconSize: [130, 68],
-          iconAnchor: [65, 68]
+          iconSize: [130, iconH],
+          iconAnchor: [anchorX, anchorY]
         });
 
         L.marker([m.lat, m.lng], { icon: icon }).addTo(markersLayer);

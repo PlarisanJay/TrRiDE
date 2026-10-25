@@ -1,6 +1,7 @@
 import { supabase } from '../config/supabase';
 import { haversineDistance } from '../config/mapConfig';
 import { sendPushToUser, sendLocalNotification } from './pushNotifications';
+import { createNotification } from './notifications';
 
 // Maximum passengers a driver can carry across all active trips
 export const MAX_PASSENGERS = 7;
@@ -111,6 +112,21 @@ export const acceptTrip = async (tripId, driverId, tripPassengers = null) => {
     .single();
 
   if (error) throw error;
+
+  // Notify student that driver accepted the ride
+  try {
+    if (data?.student_id) {
+      await createNotification({
+        userId: data.student_id,
+        type: 'trip',
+        title: 'Ride Accepted',
+        body: 'A driver has accepted your ride request.',
+        data: { screen: 'OrderDetails', tripId: data.id },
+      });
+      sendLocalNotification('Ride Accepted', 'A driver has accepted your ride request.', { screen: 'OrderDetails', tripId: data.id }).catch(() => {});
+    }
+  } catch (e) {}
+
   return data;
 };
 

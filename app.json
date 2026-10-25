@@ -1,10 +1,11 @@
 {
   "expo": {
-    "name": "triride_app",
-    "slug": "triride_app",
+    "name": "TriRide",
+    "slug": "Triride",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "newArchEnabled": false,
+    "icon": "./assets/splash-icon.png",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true,
@@ -16,7 +17,7 @@
       "package": "com.triride.app",
       "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#0A3D91",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -33,7 +34,7 @@
       ]
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/splash-icon.png"
     },
     "plugins": [
       [
@@ -43,9 +44,18 @@
         }
       ],
       [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#FFFFFF",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain"
+        }
+      ],
+      [
         "expo-notifications",
         {
-          "icon": "./assets/icon.png",
+          "icon": "./assets/notification-icon.png",
           "color": "#004ac6",
           "sounds": [],
           "androidMode": "default",
@@ -59,12 +69,6 @@
       "eas": {
         "projectId": "0da2c304-db22-4841-891e-86a8a26373c1"
       }
-    },
-    "runtimeVersion": {
-      "policy": "appVersion"
-    },
-    "updates": {
-      "url": "https://u.expo.dev/0da2c304-db22-4841-891e-86a8a26373c1"
     }
   }
 }

@@ -257,6 +257,10 @@ export default function CurrentTripScreen({ userProfile, tripId, onTripCompleted
         alertDialog({ title: 'Trip Started', message: 'Passenger picked up. Heading to destination.' });
       } else if (trip.status === 'in_progress') {
         await completeTrip(tripId);
+        await notifyDialog({
+          title: 'Congratulations!',
+          message: 'All passengers have been dropped off. Great job!',
+        });
         onTripCompleted();
       }
     } catch (e) {
@@ -422,9 +426,9 @@ export default function CurrentTripScreen({ userProfile, tripId, onTripCompleted
           <View style={[styles.tripLocationsCard, SHADOWS.diffusion]}>
             <View style={styles.locationsHeader}>
               <Text style={styles.locationsTitle}>Trip Itinerary</Text>
-              {routeDistText && routeDurText ? (
+              {routeDistText ? (
                 <View style={styles.routeDistanceBadge}>
-                  <Text style={styles.routeDistanceBadgeText}>📍 {routeDistText} • ⏱️ {routeDurText}</Text>
+                  <Text style={styles.routeDistanceBadgeText}>📍 {routeDistText}</Text>
                 </View>
               ) : null}
             </View>

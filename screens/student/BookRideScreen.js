@@ -10,19 +10,26 @@ import {
   ACCENT,
   BORDERS,
 } from '../../theme';
-import { TOLEDO_CITY, fetchRoute, haversineDistance, reverseGeocode, formatDistanceText, formatDurationText } from '../../config/mapConfig';
+import { TOLEDO_CITY, fetchRoute, haversineDistance, reverseGeocode, formatDistanceText, formatDurationText, toCoordinate } from '../../config/mapConfig';
 import { createTrip } from '../../data/trips';
 import MapPreview from '../../components/MapPreview';
 import PlacesAutocomplete from '../../components/PlacesAutocomplete';
 import { useWideWeb, wideMapStyles } from '../../lib/webLayout';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function BookRideScreen({ userProfile, onConfirmBooking, onNavigate }) {
-  const [pickup, setPickup] = useState('Current Location');
-  const [pickupCoords, setPickupCoords] = useState({ latitude: TOLEDO_CITY.latitude, longitude: TOLEDO_CITY.longitude });
+  const [pickup, setPickup] = useState('');
+  const [pickupPlace, setPickupPlace] = useState({
+    placeId: null,
+    formatted: '',
+    coordinate: { latitude: TOLEDO_CITY.latitude, longitude: TOLEDO_CITY.longitude },
+  });
+  const pickupCoords = pickupPlace?.coordinate || null;
   const [userEditedPickup, setUserEditedPickup] = useState(false);
   const [isSheetExpanded, setIsSheetExpanded] = useState(false);
   const [destination, setDestination] = useState('');
-  const [destinationCoords, setDestinationCoords] = useState(null);
+  const [destinationPlace, setDestinationPlace] = useState(null);
+  const destinationCoords = destinationPlace?.coordinate || null;
   const [scheduleMode, setScheduleMode] = useState('now'); // 'now' or 'later'
   const [passengers, setPassengers] = useState(1);
   const [notes, setNotes] = useState('');
@@ -30,6 +37,7 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
   const [time, setTime] = useState('');
   const [mapRegion, setMapRegion] = useState(TOLEDO_CITY);
   const [routeCoordinates, setRouteCoordinates] = useState([]);
+  const [routeEndpoints, setRouteEndpoints] = useState(null);
   const [routeDuration, setRouteDuration] = useState('30 MIN');
   const [routeDistance, setRouteDistance] = useState('');
   const [routeDurationDetail, setRouteDurationDetail] = useState('');
@@ -37,9 +45,83 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [activeField, setActiveField] = useState(null); // 'pickup' | 'destination' | null
+  const [sheetHeight, setSheetHeight] = useState(300);
+  const [autoFollow, setAutoFollow] = useState(true);
+  const [showRecenter, setShowRecenter] = useState(false);
 
   const mapRef = useRef(null);
+  const suppressRegionUntilRef = useRef(0);
+  const fitPaddingRef = useRef({ top: 55, right: 40, bottom: 45, left: 40 });
+  // Mount-time GPS can resolve after the user has already picked a place.
+  // This ref makes sure that late GPS result cannot replace the selection.
+  const userEditedPickupRef = useRef(false);
+  const programmaticMoveRef = useRef(false);
+  const userInteractingRef = useRef(false);
+  const lastFitRef = useRef({ pLat: null, pLng: null, dLat: null, dLng: null });
   const isWideWeb = useWideWeb();
+  const insets = useSafeAreaInsets();
+
+  const fitPadding = useMemo(() => {
+    if (isWideWeb) {
+      return { top: 160, right: 120, bottom: 120, left: 620 };
+    }
+    return {
+      top: 55,
+      right: 40,
+      bottom: 45,
+      left: 40,
+    };
+  }, [isWideWeb]);
+
+  useEffect(() => {
+    fitPaddingRef.current = fitPadding;
+  }, [fitPadding]);
+
+  useEffect(() => {
+    return () => {};
+  }, []);
+
+  // Auto-fit when pickup/destination change (planning mode)
+  useEffect(() => {
+    if (pickupCoords && destinationCoords) {
+      const key = `${pickupCoords.latitude},${pickupCoords.longitude}|${destinationCoords.latitude},${destinationCoords.longitude}`;
+      if (lastFitRef.current.pLat === pickupCoords.latitude && lastFitRef.current.pLng === pickupCoords.longitude && lastFitRef.current.dLat === destinationCoords.latitude && lastFitRef.current.dLng === destinationCoords.longitude) {
+        return;
+      }
+      lastFitRef.current = { pLat: pickupCoords.latitude, pLng: pickupCoords.longitude, dLat: destinationCoords.latitude, dLng: destinationCoords.longitude };
+      setAutoFollow(true);
+      setShowRecenter(false);
+      programmaticMoveRef.current = true;
+      setTimeout(() => {
+        try {
+          if (routeCoordinates && routeCoordinates.length > 0) {
+            mapRef.current?.fitBounds(fitPaddingRef.current);
+          } else {
+            const pts = [
+              [pickupCoords.latitude, pickupCoords.longitude],
+              [destinationCoords.latitude, destinationCoords.longitude],
+            ];
+            mapRef.current?.fitToCoordinates?.(pts, fitPaddingRef.current);
+          }
+        } catch (e) {}
+        setTimeout(() => {
+          programmaticMoveRef.current = false;
+        }, 900);
+      }, 200);
+    } else if (pickupCoords && !destinationCoords) {
+      setAutoFollow(true);
+      setShowRecenter(false);
+      programmaticMoveRef.current = true;
+      setTimeout(() => {
+        try {
+          mapRef.current?.recenter(pickupCoords.latitude, pickupCoords.longitude, 16);
+        } catch (e) {}
+        setTimeout(() => {
+          programmaticMoveRef.current = false;
+        }, 800);
+      }, 150);
+    }
+  }, [pickupCoords?.latitude, pickupCoords?.longitude, destinationCoords?.latitude, destinationCoords?.longitude, routeCoordinates?.length]);
 
   // Auto-restore map when keyboard dismisses
   useEffect(() => {
@@ -82,20 +164,40 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
           if (status !== 'granted') return;
         }
         const loc = await getAccuratePosition().catch(() => null);
-        if (loc?.coords && isMounted) {
+        if (loc?.coords && isMounted && !userEditedPickupRef.current) {
           const newCoords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
-          setPickupCoords(newCoords);
+          setPickupPlace({
+            placeId: null,
+            formatted: addr || 'Current Location',
+            coordinate: newCoords,
+          });
+          setPickup(addr || 'Current Location');
           setMapRegion({
             latitude: loc.coords.latitude,
             longitude: loc.coords.longitude,
-            latitudeDelta: 0.015,
-            longitudeDelta: 0.015,
+            latitudeDelta: 0.01,
+            longitudeDelta: 0.01,
           });
-          mapRef.current?.recenter(loc.coords.latitude, loc.coords.longitude);
+          setAutoFollow(true);
+          setShowRecenter(false);
+          programmaticMoveRef.current = true;
+          setTimeout(() => {
+            try {
+              mapRef.current?.recenter(loc.coords.latitude, loc.coords.longitude, 16);
+            } catch (e) {}
+            setTimeout(() => {
+              programmaticMoveRef.current = false;
+            }, 800);
+          }, 150);
 
           const addr = await reverseGeocode(loc.coords.latitude, loc.coords.longitude);
-          if (isMounted && !userEditedPickup && addr) {
+          if (isMounted && !userEditedPickupRef.current && addr) {
             setPickup(addr);
+            setPickupPlace((prev) => ({
+              placeId: null,
+              formatted: addr,
+              coordinate: prev?.coordinate || newCoords,
+            }));
           }
         }
       } catch (e) {
@@ -120,7 +222,12 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
         }
         const { status } = await Location.requestForegroundPermissionsAsync().catch(() => ({ status: 'denied' }));
         if (status !== 'granted') {
-          if (pickupCoords) mapRef.current?.recenter(pickupCoords.latitude, pickupCoords.longitude);
+          if (pickupCoords) {
+            mapRef.current?.recenter(pickupCoords.latitude, pickupCoords.longitude, 17);
+            setTimeout(() => {
+              try { mapRef.current?.fitBounds(fitPaddingRef.current); } catch (e) {}
+            }, 100);
+          }
           return;
         }
       }
@@ -128,18 +235,40 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
       const loc = await getAccuratePosition().catch(() => null);
       if (loc?.coords) {
         const newCoords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
-        setPickupCoords(newCoords);
+        userEditedPickupRef.current = false;
+        setUserEditedPickup(false);
+        setPickupPlace({
+          placeId: null,
+          formatted: addr || 'Current Location',
+          coordinate: newCoords,
+        });
+        setPickup(addr || 'Current Location');
         setMapRegion({
           latitude: loc.coords.latitude,
           longitude: loc.coords.longitude,
-          latitudeDelta: 0.015,
-          longitudeDelta: 0.015,
+          latitudeDelta: 0.01,
+          longitudeDelta: 0.01,
         });
-        mapRef.current?.recenter(loc.coords.latitude, loc.coords.longitude);
+        setAutoFollow(true);
+        setShowRecenter(false);
+        programmaticMoveRef.current = true;
+        setTimeout(() => {
+          try {
+            mapRef.current?.recenter(loc.coords.latitude, loc.coords.longitude, 17);
+          } catch (e) {}
+          setTimeout(() => {
+            programmaticMoveRef.current = false;
+          }, 800);
+        }, 50);
 
         const addr = await reverseGeocode(loc.coords.latitude, loc.coords.longitude);
-        if (addr && !userEditedPickup) {
+        if (addr) {
           setPickup(addr);
+          setPickupPlace((prev) => ({
+            placeId: null,
+            formatted: addr,
+            coordinate: prev?.coordinate || newCoords,
+          }));
         }
         return;
       }
@@ -148,38 +277,80 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
     }
 
     if (pickupCoords) {
-      mapRef.current?.recenter(pickupCoords.latitude, pickupCoords.longitude);
+      mapRef.current?.recenter(pickupCoords.latitude, pickupCoords.longitude, 17);
+      setTimeout(() => {
+        try { mapRef.current?.fitBounds(fitPaddingRef.current); } catch (e) {}
+      }, 100);
     } else {
-      mapRef.current?.recenter(TOLEDO_CITY.latitude, TOLEDO_CITY.longitude);
+      mapRef.current?.recenter(TOLEDO_CITY.latitude, TOLEDO_CITY.longitude, 15);
+      setTimeout(() => {
+        try { mapRef.current?.fitBounds(fitPaddingRef.current); } catch (e) {}
+      }, 100);
     }
-  }, [pickupCoords, userEditedPickup, getAccuratePosition]);
+  }, [pickupCoords, getAccuratePosition]);
 
-  // Pinpoint on map: tap map to accurately set pickup or destination coordinates
+  // Pinpoint on map: tap map to accurately set pickup or destination.
+  // Only an explicitly focused field may be changed; after a suggestion is
+  // selected activeField is null, and an incidental tap must never overwrite
+  // the destination the user just chose.
   const handleMapPress = useCallback(async (coords) => {
-    if (!coords?.latitude || !coords?.longitude) return;
-    const newCoords = { latitude: coords.latitude, longitude: coords.longitude };
+    const newCoords = toCoordinate(coords);
+    if (!newCoords) return;
+    if (activeField !== 'pickup' && activeField !== 'destination') return;
     if (activeField === 'pickup') {
-      setPickupCoords(newCoords);
+      userEditedPickupRef.current = true;
       setUserEditedPickup(true);
-      const addr = await reverseGeocode(coords.latitude, coords.longitude);
-      if (addr) setPickup(addr);
+      const addr = await reverseGeocode(newCoords.latitude, newCoords.longitude);
+      const formatted = addr || 'Pinned location';
+      setPickup(formatted);
+      setPickupPlace({ placeId: null, formatted, coordinate: newCoords });
     } else {
-      setDestinationCoords(newCoords);
-      const addr = await reverseGeocode(coords.latitude, coords.longitude);
-      if (addr) setDestination(addr);
+      const addr = await reverseGeocode(newCoords.latitude, newCoords.longitude);
+      const formatted = addr || 'Pinned location';
+      setDestination(formatted);
+      setDestinationPlace({ placeId: null, formatted, coordinate: newCoords });
     }
+    setRouteEndpoints(null);
   }, [activeField]);
 
   // Fetch route when both pickup and destination are present
   useEffect(() => {
     let isMounted = true;
-    if (pickupCoords?.latitude && destinationCoords?.latitude) {
-      fetchRoute(pickupCoords, destinationCoords).then((res) => {
+    const controller = new AbortController();
+    if (pickupCoords && destinationCoords) {
+      // Clear the previous line/snapped pins immediately so the original
+      // selected points are shown until this route is drawn.
+      setRouteCoordinates([]);
+      setRouteEndpoints(null);
+
+      fetchRoute(pickupCoords, destinationCoords, { signal: controller.signal }).then((res) => {
         if (isMounted && res) {
           setRouteCoordinates(res.coordinates || []);
-          setRouteDuration(res.durationText || '30 MIN');
+          setRouteEndpoints(res.start && res.end ? { start: res.start, end: res.end } : null);
+          setRouteDuration(res.durationText || '');
           setRouteDistance(res.distanceText || '');
           setRouteDurationDetail(res.durationText || '');
+          suppressRegionUntilRef.current = Date.now() + 900;
+          // Auto-fit both locations/route when planning
+          requestAnimationFrame(() => {
+            try {
+              setAutoFollow(true);
+              setShowRecenter(false);
+              programmaticMoveRef.current = true;
+              if (res.coordinates && res.coordinates.length > 0) {
+                mapRef.current?.fitBounds(fitPaddingRef.current);
+              } else {
+                const pts = [
+                  [pickupCoords.latitude, pickupCoords.longitude],
+                  [destinationCoords.latitude, destinationCoords.longitude],
+                ];
+                mapRef.current?.fitToCoordinates?.(pts, fitPaddingRef.current);
+              }
+              setTimeout(() => {
+                programmaticMoveRef.current = false;
+              }, 900);
+            } catch (e) {}
+          });
         }
       }).catch(() => {
         if (isMounted) {
@@ -191,26 +362,127 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
           );
           const distMeters = Math.round(distKm * 1000);
           setRouteDistance(formatDistanceText(distMeters));
-          const mins = Math.max(1, Math.round(distKm * 3));
+          // Use more realistic speed for longer distances
+          const avgSpeedKmh = distKm > 20 ? 50 : distKm > 10 ? 42 : distKm > 5 ? 35 : 28;
+          const mins = Math.max(1, Math.round((distKm / avgSpeedKmh) * 60));
           const durStr = formatDurationText(mins);
           setRouteDuration(durStr);
           setRouteDurationDetail(durStr);
+          requestAnimationFrame(() => {
+            try {
+              setAutoFollow(true);
+              setShowRecenter(false);
+              programmaticMoveRef.current = true;
+              const pts = [
+                [pickupCoords.latitude, pickupCoords.longitude],
+                [destinationCoords.latitude, destinationCoords.longitude],
+              ];
+              mapRef.current?.fitToCoordinates?.(pts, fitPaddingRef.current);
+              setTimeout(() => {
+                programmaticMoveRef.current = false;
+              }, 900);
+            } catch (e) {}
+          });
         }
       });
     } else {
       setRouteCoordinates([]);
+      setRouteEndpoints(null);
       setRouteDistance('');
       setRouteDurationDetail('');
     }
     return () => {
       isMounted = false;
+      controller.abort();
     };
   }, [pickupCoords?.latitude, pickupCoords?.longitude, destinationCoords?.latitude, destinationCoords?.longitude]);
 
-  // Fit bounds to show both pickup and destination
+  // Fit bounds to show both pickup and destination above the bottom sheet
   const handleFitBounds = useCallback(() => {
-    mapRef.current?.fitBounds();
-  }, []);
+    setAutoFollow(true);
+    setShowRecenter(false);
+    programmaticMoveRef.current = true;
+    if (routeCoordinates && routeCoordinates.length > 0) {
+      mapRef.current?.fitBounds(fitPaddingRef.current);
+    } else if (pickupCoords && destinationCoords) {
+      const pts = [
+        [pickupCoords.latitude, pickupCoords.longitude],
+        [destinationCoords.latitude, destinationCoords.longitude],
+      ];
+      mapRef.current?.fitToCoordinates?.(pts, fitPaddingRef.current);
+    } else if (pickupCoords) {
+      mapRef.current?.recenter(pickupCoords.latitude, pickupCoords.longitude, 16);
+    } else if (destinationCoords) {
+      mapRef.current?.recenter(destinationCoords.latitude, destinationCoords.longitude, 16);
+    }
+    setTimeout(() => {
+      programmaticMoveRef.current = false;
+    }, 800);
+  }, [routeCoordinates, pickupCoords, destinationCoords]);
+
+  const applySelectedPlace = (field, loc) => {
+    // Use the suggestion's own coordinate exactly as returned. No reverse
+    // geocoding, no centroid, no re-fetch of the display text.
+    const coordinate = toCoordinate(loc?.coordinate);
+    if (!coordinate) {
+      alertDialog({ title: 'Location unavailable', message: 'This suggestion has no coordinates. Please choose another result.' });
+      return;
+    }
+    const formatted = loc.formatted || loc.text || 'Selected location';
+    const place = { placeId: loc.placeId || null, formatted, coordinate };
+
+    if (field === 'pickup') {
+      userEditedPickupRef.current = true;
+      setUserEditedPickup(true);
+      setPickup(formatted);
+      setPickupPlace(place);
+    } else {
+      setDestination(formatted);
+      setDestinationPlace(place);
+    }
+
+    // Drop any previous snap so the raw selected points are shown until the
+    // new route is drawn.
+    setRouteCoordinates([]);
+    setRouteEndpoints(null);
+
+    Keyboard.dismiss();
+    setIsSearchActive(false);
+    setActiveField(null);
+
+    // Determine the OTHER pin's current coords so we know if both will be set.
+    const otherCoord = field === 'pickup' ? destinationCoords : pickupCoords;
+
+    if (otherCoord) {
+      // Both pins are now present — wait for search collapse to restore map,
+      // invalidate size and zoom out to show both pins.
+      setTimeout(() => {
+        try {
+          mapRef.current?.invalidateSize?.();
+          // Route coords are cleared above, so always fit the two raw points.
+          const pts = [
+            [coordinate.latitude, coordinate.longitude],
+            [otherCoord.latitude, otherCoord.longitude],
+          ];
+          mapRef.current?.fitToCoordinates?.(pts, fitPaddingRef.current);
+        } catch (e) {}
+        setTimeout(() => {
+          programmaticMoveRef.current = false;
+        }, 900);
+      }, 250);
+    } else {
+      // Only one pin — animate to it so the user can see their selection.
+      setTimeout(() => {
+        try {
+          mapRef.current?.invalidateSize?.();
+          mapRef.current?.animateTo(coordinate, 16);
+        } catch (e) {}
+        setTimeout(() => {
+          programmaticMoveRef.current = false;
+        }, 800);
+      }, 200);
+    }
+  };
 
   const handleConfirm = () => {
     if (!pickupCoords || !destinationCoords) {
@@ -254,14 +526,34 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
     return 'JP';
   };
 
+  // Once a route exists, use the route's own first/last points so the pin
+  // tips and the polyline meet.
+  const displayPickupCoords = routeEndpoints?.start || pickupCoords;
+  const displayDestinationCoords = routeEndpoints?.end || destinationCoords;
+
   const mapMarkers = useMemo(() => [
-    ...(pickupCoords
-      ? [{ id: 'pickup', coordinate: pickupCoords, type: 'pickup', color: ACCENT.orange }]
+    ...(displayPickupCoords
+      ? [{ id: 'pickup', coordinate: displayPickupCoords, type: 'pickup', color: ACCENT.orange }]
       : []),
-    ...(destinationCoords
-      ? [{ id: 'destination', coordinate: destinationCoords, type: 'destination', color: ACCENT.blue }]
+    ...(displayDestinationCoords
+      ? [{
+          id: 'destination',
+          coordinate: displayDestinationCoords,
+          type: 'destination',
+          color: ACCENT.blue,
+          badgeText: routeDistance && routeDuration
+            ? `${routeDuration} • ${routeDistance}`
+            : routeDistance || routeDuration || 'Drop-off',
+        }]
       : []),
-  ], [pickupCoords?.latitude, pickupCoords?.longitude, destinationCoords?.latitude, destinationCoords?.longitude]);
+  ], [
+    displayPickupCoords?.latitude,
+    displayPickupCoords?.longitude,
+    displayDestinationCoords?.latitude,
+    displayDestinationCoords?.longitude,
+    routeDistance,
+    routeDuration,
+  ]);
 
   return (
     <KeyboardAvoidingView
@@ -287,9 +579,20 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
           durationText={routeDuration}
           scrollEnabled={true}
           onMapPress={handleMapPress}
+          onUserInteractionStart={() => {
+            if (!programmaticMoveRef.current) {
+              userInteractingRef.current = true;
+              setAutoFollow(false);
+              setShowRecenter(true);
+            }
+          }}
+          onUserInteractionEnd={() => {
+            userInteractingRef.current = false;
+          }}
+          fitPadding={fitPadding}
         />
 
-        {/* Floating Back Button */}
+        {/* Floating Header Area with Back Button, Route Distance Pill & Profile Avatar */}
         <View style={[styles.floatingHeaderArea, isWideWeb && wideMapStyles.floatingHeaderArea]} pointerEvents="box-none">
           <TouchableOpacity
             style={styles.floatingBackBtn}
@@ -298,6 +601,15 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
           >
             <MaterialIcons name="arrow-back" size={22} color={INK.body} />
           </TouchableOpacity>
+
+          {routeDistance ? (
+            <View style={styles.mapFloatingRoutePill}>
+              <MaterialIcons name="straighten" size={14} color={ACCENT.blue} />
+              <Text style={styles.mapFloatingRouteText}>
+                {routeDistance}{routeDurationDetail ? ` • ${routeDurationDetail}` : ''}
+              </Text>
+            </View>
+          ) : null}
 
           {/* Floating Profile Initials Badge */}
           <TouchableOpacity
@@ -327,11 +639,32 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
           >
             <MaterialIcons name="crop-free" size={22} color={INK.body} />
           </TouchableOpacity>
+          {showRecenter && (
+            <TouchableOpacity
+              style={[styles.mapActionBtn, { backgroundColor: ACCENT.blue }]}
+              activeOpacity={0.8}
+              onPress={() => {
+                setAutoFollow(true);
+                setShowRecenter(false);
+                programmaticMoveRef.current = true;
+                handleFitBounds();
+                setTimeout(() => {
+                  programmaticMoveRef.current = false;
+                }, 1000);
+              }}
+            >
+              <MaterialIcons name="center-focus-strong" size={22} color={CANVAS.raised} />
+            </TouchableOpacity>
+          )}
         </View>
       </View>
 
       {/* Bottom Sheet Card */}
       <View
+        onLayout={(e) => {
+          const next = Math.round(e.nativeEvent.layout.height);
+          setSheetHeight((prev) => (Math.abs(prev - next) > 1 ? next : prev));
+        }}
         style={[
           styles.sheetContainer,
           isWideWeb && wideMapStyles.sheetContainer,
@@ -390,7 +723,10 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
 
         <ScrollView
           style={styles.sheetScroll}
-          contentContainerStyle={styles.sheetContent}
+          contentContainerStyle={[
+            styles.sheetContent,
+            { paddingBottom: Math.max(40, insets.bottom + 24) },
+          ]}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
@@ -426,6 +762,7 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
                     placeholder="Pick up Location"
                     value={pickup}
                     onChangeText={(txt) => {
+                      userEditedPickupRef.current = true;
                       setUserEditedPickup(true);
                       setPickup(txt);
                     }}
@@ -433,14 +770,7 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
                       setIsSearchActive(true);
                       setActiveField('pickup');
                     }}
-                    onSelect={(loc) => {
-                      setUserEditedPickup(true);
-                      setPickup(loc.text);
-                      setPickupCoords({ latitude: loc.latitude, longitude: loc.longitude });
-                      Keyboard.dismiss();
-                      setIsSearchActive(false);
-                      setActiveField(null);
-                    }}
+                    onSelect={(loc) => applySelectedPlace('pickup', loc)}
                   />
                 </View>
               </View>
@@ -469,18 +799,24 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
                       setIsSearchActive(true);
                       setActiveField('destination');
                     }}
-                    onSelect={(loc) => {
-                      setDestination(loc.text);
-                      setDestinationCoords({ latitude: loc.latitude, longitude: loc.longitude });
-                      Keyboard.dismiss();
-                      setIsSearchActive(false);
-                      setActiveField(null);
-                    }}
+                    onSelect={(loc) => applySelectedPlace('destination', loc)}
                   />
                 </View>
               </View>
             </View>
           </View>
+
+          {/* Quick Route Distance Pill */}
+          {(pickupCoords && destinationCoords) ? (
+            <View style={styles.quickRouteInfoPill}>
+              <View style={styles.quickRouteInfoItem}>
+                <MaterialIcons name="straighten" size={16} color={ACCENT.blue} />
+                <Text style={styles.quickRouteInfoText}>
+                  {routeDistance || 'Calculating distance...'}
+                </Text>
+              </View>
+            </View>
+          ) : null}
 
           {/* Ride Now / Schedule Later Segmented Toggle */}
           <View style={styles.toggleSegmentContainer}>
@@ -591,8 +927,8 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
             />
           </View>
 
-          {/* Trip Route Distance & Duration Info */}
-          {(routeDistance || routeDurationDetail) ? (
+          {/* Trip Route Distance Info */}
+          {routeDistance ? (
             <View style={styles.routeSummaryCard}>
               <View style={styles.routeSummaryItem}>
                 <View style={[styles.routeSummaryIconBg, { backgroundColor: ACCENT.blueWash }]}>
@@ -601,16 +937,6 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
                 <View style={styles.routeSummaryTextGroup}>
                   <Text style={styles.routeSummaryLabel}>DISTANCE</Text>
                   <Text style={styles.routeSummaryValue}>{routeDistance || 'Calculating...'}</Text>
-                </View>
-              </View>
-              <View style={styles.routeSummaryDivider} />
-              <View style={styles.routeSummaryItem}>
-                <View style={[styles.routeSummaryIconBg, { backgroundColor: ACCENT.orangeWash }]}>
-                  <MaterialIcons name="schedule" size={18} color={ACCENT.orangeDeep} />
-                </View>
-                <View style={styles.routeSummaryTextGroup}>
-                  <Text style={styles.routeSummaryLabel}>TRAVEL TIME</Text>
-                  <Text style={styles.routeSummaryValue}>{routeDurationDetail || 'Calculating...'}</Text>
                 </View>
               </View>
             </View>
@@ -702,8 +1028,8 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
                 </View>
               ) : null}
 
-              {/* Trip Distance & Estimated Travel Time Badge */}
-              {(routeDistance || routeDurationDetail) ? (
+              {/* Trip Distance Badge */}
+              {routeDistance ? (
                 <View style={styles.modalRouteSummaryRow}>
                   <View style={styles.modalRouteItem}>
                     <View style={[styles.modalRouteIconBg, { backgroundColor: ACCENT.blueWash }]}>
@@ -712,16 +1038,6 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
                     <View style={styles.modalRouteTextWrap}>
                       <Text style={styles.modalRouteLabel}>Distance</Text>
                       <Text style={styles.modalRouteValue}>{routeDistance || '--'}</Text>
-                    </View>
-                  </View>
-                  <View style={styles.modalRouteDivider} />
-                  <View style={styles.modalRouteItem}>
-                    <View style={[styles.modalRouteIconBg, { backgroundColor: ACCENT.orangeWash }]}>
-                      <MaterialIcons name="schedule" size={16} color={ACCENT.orangeDeep} />
-                    </View>
-                    <View style={styles.modalRouteTextWrap}>
-                      <Text style={styles.modalRouteLabel}>Travel Time</Text>
-                      <Text style={styles.modalRouteValue}>{routeDurationDetail || '--'}</Text>
                     </View>
                   </View>
                 </View>
@@ -801,6 +1117,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     ...ELEVATION.lg,
   },
+  mapFloatingRoutePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: CANVAS.raised,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 20,
+    gap: 6,
+    ...ELEVATION.md,
+    borderWidth: 1,
+    borderColor: 'rgba(37, 99, 235, 0.15)',
+  },
+  mapFloatingRouteText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: INK.strong,
+  },
   // The fill is a GRADIENTS.brandBright LinearGradient in the JSX.
   floatingAvatarBtn: {
     width: 44,
@@ -834,8 +1167,8 @@ const styles = StyleSheet.create({
     zIndex: 50,
   },
   mapActionBtn: {
-    width: 42,
-    height: 42,
+    width: 48,
+    height: 48,
     borderRadius: 12,
     backgroundColor: CANVAS.raised,
     justifyContent: 'center',
@@ -844,6 +1177,50 @@ const styles = StyleSheet.create({
     // The 1px rgba(0,0,0,0.05) ring was doing the job of a shadow; ELEVATION
     // now supplies that separation, so only a whisper of a hairline is left.
     ...BORDERS.hair,
+  },
+  // Fixed centre pin. The icon box is shifted so the bottom tip of the
+  // MaterialIcons "place" glyph sits exactly on the map centre.
+
+  tuneTextWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  tuneEyebrow: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    color: INK.muted,
+    marginBottom: 2,
+  },
+  tuneAddress: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: INK.strong,
+  },
+  tuneCancelBtn: {
+    minHeight: 48,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  tuneCancelText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: INK.slate,
+  },
+  tuneConfirmBtn: {
+    minHeight: 48,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: ACCENT.blue,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  tuneConfirmText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: CANVAS.raised,
   },
   // The sheet overlaps the map, so it needs a pronounced lift. This is the
   // one surface in the app where a strong shadow is load-bearing.
@@ -882,9 +1259,9 @@ const styles = StyleSheet.create({
     zIndex: 100,
   },
   searchBackBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     backgroundColor: CANVAS.sunken,
     justifyContent: 'center',
     alignItems: 'center',
@@ -895,8 +1272,9 @@ const styles = StyleSheet.create({
     color: INK.strong,
   },
   searchDoneBtn: {
-    paddingHorizontal: 8,
-    paddingVertical: 6,
+    minHeight: 48,
+    paddingHorizontal: 12,
+    justifyContent: 'center',
   },
   searchDoneBtnText: {
     fontSize: 14,
@@ -1012,6 +1390,35 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 12,
   },
+  quickRouteInfoPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(37, 99, 235, 0.08)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(37, 99, 235, 0.18)',
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    marginBottom: 12,
+  },
+  quickRouteInfoItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  quickRouteInfoDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: INK.subtle,
+    marginHorizontal: 10,
+  },
+  quickRouteInfoText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: INK.strong,
+  },
   toggleSegmentContainer: {
     flexDirection: 'row',
     backgroundColor: CANVAS.sunken,
@@ -1022,6 +1429,7 @@ const styles = StyleSheet.create({
   },
   segmentBtn: {
     flex: 1,
+    minHeight: 48,
     paddingVertical: 9,
     borderRadius: 8,
     alignItems: 'center',
@@ -1061,7 +1469,7 @@ const styles = StyleSheet.create({
     ...BORDERS.soft,
     backgroundColor: CANVAS.sunken,
     borderRadius: 10,
-    height: 44,
+    height: 48,
     paddingHorizontal: 12,
     fontSize: 14,
     color: INK.strong,
@@ -1082,7 +1490,7 @@ const styles = StyleSheet.create({
   },
   passengerBox: {
     flex: 1,
-    height: 42,
+    height: 48,
     ...BORDERS.strong,
     borderRadius: 8,
     backgroundColor: CANVAS.raised,
@@ -1295,7 +1703,7 @@ const styles = StyleSheet.create({
   },
   modalBtnEdit: {
     flex: 1,
-    height: 46,
+    height: 48,
     borderRadius: 10,
     ...BORDERS.strong,
     justifyContent: 'center',
@@ -1310,7 +1718,7 @@ const styles = StyleSheet.create({
   // Gradient fill lives in the JSX.
   modalBtnFinalConfirm: {
     flex: 1.6,
-    height: 46,
+    height: 48,
     borderRadius: 10,
     overflow: 'hidden',
   },

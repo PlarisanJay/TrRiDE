@@ -14,15 +14,98 @@ export const GEOAPIFY_GEOCODE_URL = 'https://api.geoapify.com/v1/geocode/search'
 
 export const GEOAPIFY_ATTRIBUTION_TEXT = 'Powered by Geoapify | © OpenStreetMap contributors | © OpenMapTiles';
 
+// Toledo City search bias. Kept as lon,lat because that is what Geoapify's
+// `bias` and `filter` parameters expect. Coordinates below are the app's
+// canonical { latitude, longitude } shape.
+export const TOLEDO_SEARCH_BIAS = {
+  latitude: 10.3773,
+  longitude: 123.6384,
+  radiusMeters: 25000,
+};
+
+// ── One coordinate contract ──────────────────────────────────────────────
+// Everywhere else in the app a coordinate is { latitude, longitude }.
+// Convert only at an API boundary:
+//   Geoapify routing waypoints -> "latitude,longitude"
+//   GeoJSON / Geoapify geometry -> [longitude, latitude] -> convert on read
+//   Leaflet -> [latitude, longitude]
+const toFiniteNumber = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+  const num = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(num) ? num : null;
+};
+
+/** Normalize anything with latitude/longitude (or lat/lon) into the app shape. */
+export function toCoordinate(input) {
+  if (!input) return null;
+  const latitude = toFiniteNumber(input.latitude !== undefined ? input.latitude : input.lat);
+  const longitude = toFiniteNumber(input.longitude !== undefined ? input.longitude : input.lon);
+  if (latitude === null || longitude === null) return null;
+  if (Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return null;
+  return { latitude, longitude };
+}
+
+export function isValidCoordinate(input) {
+  return toCoordinate(input) !== null;
+}
+
+/** Geoapify routing expects "lat,lon". */
+export function toGeoapifyWaypoint(coordinate) {
+  const coord = toCoordinate(coordinate);
+  if (!coord) return null;
+  return `${coord.latitude},${coord.longitude}`;
+}
+
+/** Leaflet expects [lat, lng]. */
+export function toLeafletLatLng(coordinate) {
+  const coord = toCoordinate(coordinate);
+  if (!coord) return null;
+  return [coord.latitude, coord.longitude];
+}
+
+/** GeoJSON positions are [longitude, latitude]. */
+export function geoJsonPositionToCoordinate(position) {
+  if (!Array.isArray(position) || position.length < 2) return null;
+  const longitude = toFiniteNumber(position[0]);
+  const latitude = toFiniteNumber(position[1]);
+  if (latitude === null || longitude === null) return null;
+  return toCoordinate({ latitude, longitude });
+}
+
+/**
+ * Convert a Geoapify geocoding feature into the single app place shape.
+ * Uses properties.lat/lon first (autocomplete) and falls back to the
+ * GeoJSON geometry position. It never re-geocodes the display text.
+ */
+export function normalizeGeoapifyFeature(feature) {
+  if (!feature) return null;
+  const props = feature.properties || {};
+  const coordinate =
+    toCoordinate({ latitude: props.lat, longitude: props.lon }) ||
+    geoJsonPositionToCoordinate(feature.geometry?.coordinates);
+  if (!coordinate) return null;
+
+  const formatted = props.formatted || props.address_line1 || '';
+  return {
+    placeId: props.place_id || null,
+    formatted,
+    title: props.name || props.address_line1 || formatted.split(',')[0] || 'Selected location',
+    subtext: props.address_line2 || props.city || 'Toledo City, Cebu',
+    category: props.categories?.[0]?.split('.')[0] || null,
+    coordinate,
+  };
+}
+
 export function buildStaticMapUrl({ lat, lng, zoom = 15, markers = [], width = 600, height = 400 }) {
   let url = `https://maps.geoapify.com/v1/staticmap?style=${MAP_STYLE}&width=${width}&height=${height}&center=lonlat:${lng},${lat}&zoom=${zoom}&apiKey=${GEOAPIFY_API_KEY}`;
   if (markers.length > 0) {
     const markerParts = markers.map((m) => {
-      const color = (m.id === 'driver' || m.type === 'driver')
+      const custom = m.customColor ? `%23${String(m.customColor).replace('#', '')}` : null;
+      const color = custom || ((m.id === 'driver' || m.type === 'driver')
         ? '%2316a34a'
         : (m.id === 'destination' || m.type === 'destination')
         ? '%232563eb'
-        : '%23f97316';
+        : '%23f97316');
       return `lonlat:${m.lng},${m.lat};color:${color};size:medium`;
     });
     url += `&marker=${markerParts.join('|')}`;
@@ -30,11 +113,18 @@ export function buildStaticMapUrl({ lat, lng, zoom = 15, markers = [], width = 6
   return url;
 }
 
-export function buildLeafletHtml({ lat, lng, zoom, scrollEnabled, wheelZoom = false, markers = [], route = [], durationText = '30 MIN' }) {
+export function buildLeafletHtml({ lat, lng, zoom, scrollEnabled, wheelZoom = false, markers = [], route = [], durationText = '30 MIN', fitPadding = null }) {
   const apiKey = GEOAPIFY_API_KEY;
   const tileUrl = `https://maps.geoapify.com/v1/tile/${MAP_STYLE}/{z}/{x}/{y}.png?apiKey=${apiKey}`;
   const markersJson = JSON.stringify(markers || []);
   const routeJson = JSON.stringify(route || []);
+  const padding = fitPadding && typeof fitPadding === 'object' ? fitPadding : {};
+  const fitPaddingJson = JSON.stringify({
+    top: toFiniteNumber(padding.top) ?? 55,
+    right: toFiniteNumber(padding.right) ?? 40,
+    bottom: toFiniteNumber(padding.bottom) ?? 45,
+    left: toFiniteNumber(padding.left) ?? 40,
+  });
 
   return `<!DOCTYPE html>
 <html>
@@ -68,7 +158,7 @@ export function buildLeafletHtml({ lat, lng, zoom, scrollEnabled, wheelZoom = fa
     /* Custom Callout Badges */
     .custom-marker-container {
       position: relative;
-      width: 130px;
+      width: 170px;
       height: 68px;
       display: flex;
       flex-direction: column;
@@ -182,21 +272,106 @@ export function buildLeafletHtml({ lat, lng, zoom, scrollEnabled, wheelZoom = fa
     var routeLayer = L.layerGroup().addTo(map);
     var currentDuration = ${JSON.stringify(durationText || '30 MIN')};
 
-    function fitAll() {
+    var fitPadding = ${fitPaddingJson};
+
+    function normalizeFitPadding(value) {
+      if (!value || typeof value !== 'object') return fitPadding;
+      return {
+        top: Number.isFinite(Number(value.top)) ? Number(value.top) : fitPadding.top,
+        right: Number.isFinite(Number(value.right)) ? Number(value.right) : fitPadding.right,
+        bottom: Number.isFinite(Number(value.bottom)) ? Number(value.bottom) : fitPadding.bottom,
+        left: Number.isFinite(Number(value.left)) ? Number(value.left) : fitPadding.left
+      };
+    }
+
+    function getSafePadding(padding) {
+      var norm = normalizeFitPadding(padding);
+      var sz = map.getSize();
+      var w = (sz && sz.x > 0) ? sz.x : 400;
+      var h = (sz && sz.y > 0) ? sz.y : 300;
+
+      // Ensure padding never consumes more than 35% on any single side,
+      // guaranteeing positive room for Leaflet to fit bounds safely.
+      var maxTop = Math.max(10, Math.floor(h * 0.35));
+      var maxBottom = Math.max(10, Math.floor(h * 0.35));
+      var maxLeft = Math.max(10, Math.floor(w * 0.35));
+      var maxRight = Math.max(10, Math.floor(w * 0.35));
+
+      return {
+        top: Math.min(Math.max(0, norm.top), maxTop),
+        bottom: Math.min(Math.max(0, norm.bottom), maxBottom),
+        left: Math.min(Math.max(0, norm.left), maxLeft),
+        right: Math.min(Math.max(0, norm.right), maxRight)
+      };
+    }
+
+    function fitAll(padding) {
+      try { map.invalidateSize(); } catch(e) {}
+      var safePadding = getSafePadding(padding);
+      fitPadding = normalizeFitPadding(padding);
       var allBounds = L.latLngBounds([]);
       if (routeLayer && routeLayer.getLayers().length > 0) {
         routeLayer.eachLayer(function(l) {
-          if (l.getBounds) allBounds.extend(l.getBounds());
+          try {
+            if (l.getBounds) allBounds.extend(l.getBounds());
+            else if (l.getLatLngs) {
+              var latlngs = l.getLatLngs();
+              // flatten if nested
+              function flatten(arr) {
+                var res = [];
+                arr.forEach(function(a){
+                  if (Array.isArray(a)) res = res.concat(flatten(a));
+                  else if (a && a.lat !== undefined) res.push(a);
+                });
+                return res;
+              }
+              flatten(latlngs).forEach(function(pt){ allBounds.extend(pt); });
+            }
+          } catch(e){}
         });
       }
       if (markersLayer && markersLayer.getLayers().length > 0) {
         markersLayer.eachLayer(function(l) {
-          if (l.getLatLng) allBounds.extend(l.getLatLng());
+          try {
+            if (l.getLatLng) allBounds.extend(l.getLatLng());
+          } catch(e){}
         });
       }
       if (allBounds.isValid()) {
         try {
-          map.fitBounds(allBounds, { padding: [45, 45], maxZoom: 16 });
+          map.fitBounds(allBounds, {
+            paddingTopLeft: [safePadding.left, safePadding.top],
+            paddingBottomRight: [safePadding.right, safePadding.bottom],
+            maxZoom: 15,
+            animate: true
+          });
+        } catch(e) {}
+      }
+    }
+
+    function fitCoordinates(coords, padding) {
+      try { map.invalidateSize(); } catch(e) {}
+      var safePadding = getSafePadding(padding);
+      fitPadding = normalizeFitPadding(padding);
+      var allBounds = L.latLngBounds([]);
+      if (!coords || coords.length === 0) return;
+      coords.forEach(function(c){
+        if (Array.isArray(c) && c.length >= 2) {
+          allBounds.extend([c[0], c[1]]);
+        } else if (c && c.lat !== undefined && c.lng !== undefined) {
+          allBounds.extend([c.lat, c.lng]);
+        } else if (c && c.latitude !== undefined && c.longitude !== undefined) {
+          allBounds.extend([c.latitude, c.longitude]);
+        }
+      });
+      if (allBounds.isValid()) {
+        try {
+          map.fitBounds(allBounds, {
+            paddingTopLeft: [safePadding.left, safePadding.top],
+            paddingBottomRight: [safePadding.right, safePadding.bottom],
+            maxZoom: 15,
+            animate: true
+          });
         } catch(e) {}
       }
     }
@@ -226,7 +401,7 @@ export function buildLeafletHtml({ lat, lng, zoom, scrollEnabled, wheelZoom = fa
       try { map.invalidateSize(); } catch (e) {}
     });
 
-    function updateRoute(coords) {
+    function updateRoute(coords, shouldFit) {
       routeLayer.clearLayers();
       if (!coords || coords.length === 0) return;
       var polyline = L.polyline(coords, {
@@ -237,16 +412,16 @@ export function buildLeafletHtml({ lat, lng, zoom, scrollEnabled, wheelZoom = fa
         lineJoin: 'round'
       }).addTo(routeLayer);
 
-      fitAll();
+      if (shouldFit !== false) fitAll();
     }
 
-    function updateMarkers(mkrs, durText) {
+    function updateMarkers(mkrs, durText, shouldFit) {
       markersLayer.clearLayers();
       var dur = durText || currentDuration || '30 MIN';
 
       mkrs.forEach(function(m) {
         var isDriver = (m.id === 'driver' || m.type === 'driver' || m.isDriver);
-        var isPickup = (m.id === 'pickup' || m.type === 'pickup' || m.color === '#f97316');
+        var isPickup = (m.id === 'pickup' || m.type === 'pickup');
         var html = '';
 
         if (isDriver) {
@@ -269,37 +444,42 @@ export function buildLeafletHtml({ lat, lng, zoom, scrollEnabled, wheelZoom = fa
             '</div>' +
           '</div>';
         } else if (isPickup) {
+          var pickupFill = m.customColor || '#f97316';
+          var pickupBadge = m.badgeText || 'PICK UP';
+          var pickupBadgeColor = m.badgeColor || pickupFill;
+          var pickupLabel = m.label || 'Pick-up';
           html = '<div class="custom-marker-container">' +
             '<div class="callout-badge-wrapper">' +
-              '<div class="badge-time orange">PICK UP</div>' +
-              '<div class="badge-label">Pick-up</div>' +
+              '<div class="badge-time orange" style="background:' + pickupBadgeColor + '">' + pickupBadge + '</div>' +
+              '<div class="badge-label">' + pickupLabel + '</div>' +
             '</div>' +
             '<svg class="pinpoint-svg" width="30" height="38" viewBox="0 0 30 38" fill="none">' +
-              '<path d="M15 38C15 38 28 23.5 28 14C28 6.82 22.18 1 15 1C7.82 1 2 6.82 2 14C2 23.5 15 38 15 38Z" fill="#f97316" stroke="#ffffff" stroke-width="2"/>' +
+              '<path d="M15 38C15 38 28 23.5 28 14C28 6.82 22.18 1 15 1C7.82 1 2 6.82 2 14C2 23.5 15 38 15 38Z" fill="' + pickupFill + '" stroke="#ffffff" stroke-width="2"/>' +
               '<circle cx="15" cy="14" r="5.5" fill="#ffffff"/>' +
-              '<circle cx="15" cy="14" r="3" fill="#f97316"/>' +
+              '<circle cx="15" cy="14" r="3" fill="' + pickupFill + '"/>' +
             '</svg>' +
           '</div>';
         } else {
-          var dropTime = dur ? dur.replace(' ', '<br>') : 'DEST';
+          var dropFill = m.customColor || '#2563eb';
+          var dropBadgeColor = m.badgeColor || dropFill;
+          var dropTime = m.badgeText || (dur ? dur.replace(' ', '<br>') : 'DEST');
+          var dropLabel = m.label || 'Drop-off';
           html = '<div class="custom-marker-container">' +
             '<div class="callout-badge-wrapper">' +
-              '<div class="badge-time blue">' + dropTime + '</div>' +
-              '<div class="badge-label">Drop-off</div>' +
+              '<div class="badge-time blue" style="background:' + dropBadgeColor + '">' + dropTime + '</div>' +
+              '<div class="badge-label">' + dropLabel + '</div>' +
             '</div>' +
             '<svg class="pinpoint-svg" width="30" height="38" viewBox="0 0 30 38" fill="none">' +
-              '<path d="M15 38C15 38 28 23.5 28 14C28 6.82 22.18 1 15 1C7.82 1 2 6.82 2 14C2 23.5 15 38 15 38Z" fill="#2563eb" stroke="#ffffff" stroke-width="2"/>' +
+              '<path d="M15 38C15 38 28 23.5 28 14C28 6.82 22.18 1 15 1C7.82 1 2 6.82 2 14C2 23.5 15 38 15 38Z" fill="' + dropFill + '" stroke="#ffffff" stroke-width="2"/>' +
               '<circle cx="15" cy="14" r="5.5" fill="#ffffff"/>' +
-              '<circle cx="15" cy="14" r="3" fill="#2563eb"/>' +
+              '<circle cx="15" cy="14" r="3" fill="' + dropFill + '"/>' +
             '</svg>' +
           '</div>';
         }
 
         // Anchor = [horizontal_center, distance_from_top_to_pin_tip]
-        // Container is 130x68. Badge ~26px tall + 4px margin. Pin SVG follows.
-        // Driver pin SVG: 34x42 -> tip at bottom of SVG -> anchorY = 26+4+42 = 72... but
-        // container height is 68, so we set iconSize tall enough and anchor accordingly.
-        var anchorX = 65; // always center
+        // Container is 170x68. Badge ~26px tall + 4px margin. Pin SVG follows.
+        var anchorX = 85; // always center of 170px container
         var anchorY, iconH;
         if (isDriver) {
           // callout badge ~26px + 4px gap + 42px pin SVG = 72px total
@@ -313,14 +493,21 @@ export function buildLeafletHtml({ lat, lng, zoom, scrollEnabled, wheelZoom = fa
         var icon = L.divIcon({
           className: '',
           html: html,
-          iconSize: [130, iconH],
+          iconSize: [170, iconH],
           iconAnchor: [anchorX, anchorY]
         });
 
-        L.marker([m.lat, m.lng], { icon: icon }).addTo(markersLayer);
+        // Guard the final boundary: never draw a marker with a missing or
+        // non-numeric coordinate, and never silently substitute a centroid.
+        var markerLat = Number(m.lat);
+        var markerLng = Number(m.lng);
+        if (!Number.isFinite(markerLat) || !Number.isFinite(markerLng)) return;
+        if (Math.abs(markerLat) > 90 || Math.abs(markerLng) > 180) return;
+
+        L.marker([markerLat, markerLng], { icon: icon }).addTo(markersLayer);
       });
 
-      fitAll();
+      if (shouldFit !== false) fitAll();
     }
 
     var initialMarkers = ${markersJson};
@@ -338,14 +525,19 @@ export function buildLeafletHtml({ lat, lng, zoom, scrollEnabled, wheelZoom = fa
       try {
         if (data.type === 'route') {
           if (data.duration) currentDuration = data.duration;
-          updateRoute(data.route);
-          if (data.markers) updateMarkers(data.markers, currentDuration);
+          var autoFit = data.autoFit !== false;
+          updateRoute(data.route, autoFit);
+          if (data.markers) updateMarkers(data.markers, currentDuration, autoFit);
         } else if (data.type === 'markers') {
-          updateMarkers(data.markers, data.duration || currentDuration);
+          updateMarkers(data.markers, data.duration || currentDuration, data.autoFit !== false);
         } else if (data.type === 'recenter') {
           map.setView([data.lat, data.lng], data.zoom || 15, { animate: true });
         } else if (data.type === 'fitbounds') {
-          fitAll();
+          fitAll(data.padding);
+        } else if (data.type === 'fitcoords') {
+          fitCoordinates(data.coords, data.padding);
+        } else if (data.type === 'invalidate_size') {
+          map.invalidateSize();
         } else if (data.type === 'region') {
           map.setView([data.lat, data.lng], data.zoom || map.getZoom());
         }
@@ -362,9 +554,9 @@ export function buildLeafletHtml({ lat, lng, zoom, scrollEnabled, wheelZoom = fa
     window.addEventListener('message', onIncomingEvent);
     document.addEventListener('message', onIncomingEvent);
 
-    map.on('click', function(e) {
+    function postMsg(obj) {
       try {
-        var msg = JSON.stringify({ type: 'map_click', lat: e.latlng.lat, lng: e.latlng.lng });
+        var msg = JSON.stringify(obj);
         if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
           window.ReactNativeWebView.postMessage(msg);
         }
@@ -372,21 +564,40 @@ export function buildLeafletHtml({ lat, lng, zoom, scrollEnabled, wheelZoom = fa
           window.parent.postMessage(msg, '*');
         }
       } catch (err) {}
+    }
+
+    map.on('click', function(e) {
+      postMsg({ type: 'map_click', lat: e.latlng.lat, lng: e.latlng.lng });
+    });
+
+    map.on('movestart', function() {
+      postMsg({ type: 'user_interaction_start' });
+    });
+    map.on('dragstart', function() {
+      postMsg({ type: 'user_interaction_start' });
+    });
+    map.on('zoomstart', function() {
+      postMsg({ type: 'user_interaction_start' });
+    });
+    map.on('touchstart', function() {
+      postMsg({ type: 'user_interaction_start' });
+    }, { passive: true });
+    map.on('mousedown', function() {
+      postMsg({ type: 'user_interaction_start' });
+    });
+
+    map.on('moveend', function() {
+      postMsg({ type: 'user_interaction_end' });
     });
 
     var moveTimeout = null;
     map.on('moveend', function() {
+      postMsg({ type: 'user_interaction_end' });
       if (moveTimeout) clearTimeout(moveTimeout);
       moveTimeout = setTimeout(function() {
         try {
           var c = map.getCenter();
-          var msg = JSON.stringify({ type: 'region', lat: c.lat, lng: c.lng, zoom: map.getZoom() });
-          if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
-            window.ReactNativeWebView.postMessage(msg);
-          }
-          if (window.parent && window.parent.postMessage) {
-            window.parent.postMessage(msg, '*');
-          }
+          postMsg({ type: 'region', lat: c.lat, lng: c.lng, zoom: map.getZoom() });
         } catch (e) {}
       }, 350);
     });
@@ -431,11 +642,14 @@ export function formatDistanceText(meters) {
   return `${km} km`;
 }
 
-export async function fetchRoute(pickupCoords, destCoords) {
-  if (!pickupCoords || !destCoords) return null;
+export async function fetchRoute(pickupCoords, destCoords, options = {}) {
+  const pickup = toCoordinate(pickupCoords);
+  const dest = toCoordinate(destCoords);
+  if (!pickup || !dest) return null;
   try {
-    const url = `https://api.geoapify.com/v1/routing?waypoints=${pickupCoords.latitude},${pickupCoords.longitude}|${destCoords.latitude},${destCoords.longitude}&mode=drive&apiKey=${GEOAPIFY_API_KEY}`;
-    const res = await fetch(url);
+    const waypoints = `${toGeoapifyWaypoint(pickup)}|${toGeoapifyWaypoint(dest)}`;
+    const url = `https://api.geoapify.com/v1/routing?waypoints=${waypoints}&mode=drive&apiKey=${GEOAPIFY_API_KEY}`;
+    const res = await fetch(url, options.signal ? { signal: options.signal } : undefined);
     const data = await res.json();
     if (data.features && data.features.length > 0) {
       const feat = data.features[0];
@@ -446,13 +660,25 @@ export async function fetchRoute(pickupCoords, destCoords) {
       } else if (geom.type === 'MultiLineString') {
         rawCoords = geom.coordinates.flat();
       }
-      const fullCoords = rawCoords.map(([lng, lat]) => [lat, lng]);
+      // GeoJSON is [lon, lat]; Leaflet is [lat, lng]. Convert once, here.
+      const fullCoords = rawCoords
+        .map((position) => geoJsonPositionToCoordinate(position))
+        .filter(Boolean)
+        .map((coord) => [coord.latitude, coord.longitude]);
       const latlngs = downsampleCoordinates(fullCoords, 120);
       const durationSeconds = feat.properties?.time || 0;
       const durationMin = Math.max(1, Math.round(durationSeconds / 60));
       const distanceMeters = feat.properties?.distance || 0;
+      const start = fullCoords.length > 0 ? { latitude: fullCoords[0][0], longitude: fullCoords[0][1] } : pickup;
+      const end = fullCoords.length > 0
+        ? { latitude: fullCoords[fullCoords.length - 1][0], longitude: fullCoords[fullCoords.length - 1][1] }
+        : dest;
       return {
         coordinates: latlngs,
+        // The route's own first/last points. Callers use these to snap the
+        // pins to the line so the pin tip and polyline always meet.
+        start,
+        end,
         durationMinutes: durationMin,
         durationText: formatDurationText(durationMin),
         distanceMeters: distanceMeters,
@@ -460,18 +686,22 @@ export async function fetchRoute(pickupCoords, destCoords) {
       };
     }
   } catch (err) {
+    if (err?.name === 'AbortError') return null;
     console.warn('Geoapify route fetch error:', err);
   }
 
   // Fallback to straight line
-  const distKm = haversineDistance(pickupCoords.latitude, pickupCoords.longitude, destCoords.latitude, destCoords.longitude);
+  const distKm = haversineDistance(pickup.latitude, pickup.longitude, dest.latitude, dest.longitude);
   const distMeters = Math.round(distKm * 1000);
-  const durationMin = Math.max(2, Math.round((distKm / 22) * 60));
+  const avgSpeedKmh = distKm > 20 ? 50 : distKm > 10 ? 42 : distKm > 5 ? 35 : 28;
+  const durationMin = Math.max(1, Math.round((distKm / avgSpeedKmh) * 60));
   return {
     coordinates: [
-      [pickupCoords.latitude, pickupCoords.longitude],
-      [destCoords.latitude, destCoords.longitude],
+      [pickup.latitude, pickup.longitude],
+      [dest.latitude, dest.longitude],
     ],
+    start: pickup,
+    end: dest,
     durationMinutes: durationMin,
     durationText: formatDurationText(durationMin),
     distanceMeters: distMeters,
@@ -494,12 +724,15 @@ export function haversineDistance(lat1, lng1, lat2, lng2) {
 }
 
 export async function reverseGeocode(lat, lng) {
-  if (!lat || !lng) return 'Current Location';
+  const coord = toCoordinate({ latitude: lat, longitude: lng });
+  if (!coord) return 'Current Location';
+  const safeLat = coord.latitude;
+  const safeLng = coord.longitude;
 
   // 1. Try Geoapify reverse geocoding
   if (GEOAPIFY_API_KEY) {
     try {
-      const url = `https://api.geoapify.com/v1/geocode/reverse?lat=${lat}&lon=${lng}&apiKey=${GEOAPIFY_API_KEY}`;
+      const url = `https://api.geoapify.com/v1/geocode/reverse?lat=${safeLat}&lon=${safeLng}&apiKey=${GEOAPIFY_API_KEY}`;
       const res = await fetch(url);
       const data = await res.json();
       if (data.features && data.features.length > 0) {
@@ -519,7 +752,7 @@ export async function reverseGeocode(lat, lng) {
   // 2. Native expo-location reverse geocoding
   try {
     const Location = require('expo-location');
-    const addresses = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
+    const addresses = await Location.reverseGeocodeAsync({ latitude: safeLat, longitude: safeLng });
     if (addresses && addresses.length > 0) {
       const a = addresses[0];
       const name = a.name || a.street;

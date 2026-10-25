@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import UserAvatar from '../../components/UserAvatar';
 import { View, Text, StyleSheet, Image, TouchableOpacity, ScrollView, ActivityIndicator, RefreshControl } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { COLORS, TYPOGRAPHY, SPACING, ROUNDED } from '../../theme';
@@ -68,16 +69,12 @@ export default function MyOrdersScreen({ userProfile, onGoBack, onNavigate, onVi
         <View style={styles.headerLeft}>
           <Text style={styles.headerTitle}>My Orders</Text>
         </View>
-        <TouchableOpacity style={styles.avatarBtn} onPress={() => onNavigate('Profile')} activeOpacity={0.8}>
-          {userProfile?.avatar_url ? (
-            <Image source={{ uri: userProfile.avatar_url }} style={styles.avatar} />
-          ) : (
-            <View style={[styles.avatar, styles.avatarDefault]}>
-              <Text style={styles.avatarInitials}>
-                {userProfile?.full_name ? userProfile.full_name.charAt(0).toUpperCase() : 'S'}
-              </Text>
-            </View>
-          )}
+        <TouchableOpacity onPress={() => onNavigate('Profile')} activeOpacity={0.8}>
+          <UserAvatar
+            uri={userProfile?.avatar_url}
+            name={userProfile?.full_name || 'S'}
+            size={38}
+          />
         </TouchableOpacity>
       </View>
 

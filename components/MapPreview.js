@@ -1,7 +1,7 @@
 import React, { useRef, useCallback, useState, useEffect, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { View, Image, Modal, TouchableOpacity, Text, StyleSheet, StatusBar, Platform } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
-import { TOLEDO_CITY, buildLeafletHtml, buildStaticMapUrl } from '../config/mapConfig';
+import { TOLEDO_CITY, buildLeafletHtml, buildStaticMapUrl, toCoordinate } from '../config/mapConfig';
 import { COLORS } from '../theme';
 
 let cachedWebView = null;
@@ -27,6 +27,10 @@ const MapPreview = forwardRef(function MapPreview(
     showControls = false,
     onRegionChangeComplete,
     onMapPress,
+    onUserInteractionStart,
+    onUserInteractionEnd,
+    fitPadding = null,
+    autoFit = true,
   },
   ref
 ) {
@@ -37,8 +41,8 @@ const MapPreview = forwardRef(function MapPreview(
   const [useStaticFallback, setUseStaticFallback] = useState(false);
   const [centerOverride, setCenterOverride] = useState(null);
 
-  const activeLat = centerOverride?.lat || region?.latitude || TOLEDO_CITY.latitude;
-  const activeLng = centerOverride?.lng || region?.longitude || TOLEDO_CITY.longitude;
+  const activeLat = centerOverride?.lat ?? region?.latitude ?? TOLEDO_CITY.latitude;
+  const activeLng = centerOverride?.lng ?? region?.longitude ?? TOLEDO_CITY.longitude;
   const zoom = region?.latitudeDelta
     ? Math.round(14 - Math.log2(region.latitudeDelta / 0.05))
     : 15;
@@ -46,17 +50,32 @@ const MapPreview = forwardRef(function MapPreview(
   const leafletMarkers = useMemo(() => {
     return (markers || []).map((m) => {
       const isDriver = m.id === 'driver' || m.type === 'driver' || m.isDriver;
-      const isDest = !isDriver && (m.id === 'destination' || m.type === 'destination' || m.color === '#2563eb' || m.color === '#006c49');
+      const isExplicitPickup = m.id === 'pickup' || m.type === 'pickup';
+      const isDest = !isDriver && (
+        m.id === 'destination' ||
+        m.type === 'destination' ||
+        (!isExplicitPickup && (m.color === '#2563eb' || m.color === '#006c49'))
+      );
+      const defaultColor = isDriver ? '#16a34a' : isDest ? '#2563eb' : '#f97316';
+      const coordinate = toCoordinate(
+        m.coordinate || { latitude: m.latitude, longitude: m.longitude }
+      );
+      if (!coordinate) return null;
       return {
         id: isDriver ? 'driver' : isDest ? 'destination' : 'pickup',
-        lat: m.coordinate?.latitude || m.latitude || TOLEDO_CITY.latitude,
-        lng: m.coordinate?.longitude || m.longitude || TOLEDO_CITY.longitude,
+        lat: coordinate.latitude,
+        lng: coordinate.longitude,
         type: isDriver ? 'driver' : isDest ? 'destination' : 'pickup',
-        color: isDriver ? '#16a34a' : isDest ? '#2563eb' : '#f97316',
+        color: m.customColor || defaultColor,
+        // Additive fields used by multi-passenger markers. Existing markers
+        // leave these unset and keep their original hard-coded colours.
+        customColor: m.customColor || null,
+        badgeText: m.badgeText || null,
+        badgeColor: m.badgeColor || null,
         label: m.label || (isDriver ? (m.statusText || 'Driver') : isDest ? 'Drop-off' : 'Pick-up'),
         statusText: m.statusText || (isDriver ? 'ON THE WAY' : isDest ? 'Drop-off' : 'Pick-up'),
       };
-    });
+    }).filter(Boolean);
   }, [markers]);
 
   // Stable HTML source: generated once so native WebView NEVER reloads
@@ -71,10 +90,12 @@ const MapPreview = forwardRef(function MapPreview(
         markers: leafletMarkers,
         route: routeCoordinates,
         durationText,
+        fitPadding,
       }),
       baseUrl: 'https://www.openstreetmap.org',
     };
-  }, [scrollEnabled]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const staticMapUrl = useMemo(() => {
     return buildStaticMapUrl({
@@ -102,21 +123,43 @@ const MapPreview = forwardRef(function MapPreview(
   }, []);
 
   useImperativeHandle(ref, () => ({
-    recenter: (reLat, reLng) => {
-      const targetLat = reLat || activeLat;
-      const targetLng = reLng || activeLng;
-      setCenterOverride({ lat: targetLat, lng: targetLng });
+    recenter: (reLat, reLng, reZoom = 15) => {
+      const target =
+        toCoordinate({ latitude: reLat, longitude: reLng }) ||
+        toCoordinate({ latitude: activeLat, longitude: activeLng });
+      if (!target) return;
+      setCenterOverride({ lat: target.latitude, lng: target.longitude });
       sendUpdate({
         type: 'recenter',
-        lat: targetLat,
-        lng: targetLng,
-        zoom: 15,
+        lat: target.latitude,
+        lng: target.longitude,
+        zoom: Number.isFinite(Number(reZoom)) ? Number(reZoom) : 15,
+        programmatic: true,
       });
     },
-    fitBounds: () => {
-      sendUpdate({ type: 'fitbounds' });
+    animateTo: (coordinate, targetZoom = 17) => {
+      const target = toCoordinate(coordinate);
+      if (!target) return;
+      setCenterOverride({ lat: target.latitude, lng: target.longitude });
+      sendUpdate({
+        type: 'recenter',
+        lat: target.latitude,
+        lng: target.longitude,
+        zoom: Number.isFinite(Number(targetZoom)) ? Number(targetZoom) : 17,
+        programmatic: true,
+      });
     },
-  }), [sendUpdate, activeLat, activeLng]);
+    fitBounds: (padding) => {
+      sendUpdate({ type: 'fitbounds', padding: padding || fitPadding, programmatic: true });
+    },
+    fitToCoordinates: (coords, padding) => {
+      sendUpdate({ type: 'fitcoords', coords: coords || [], padding: padding || fitPadding, programmatic: true });
+    },
+    invalidateSize: () => {
+      sendUpdate({ type: 'invalidate_size' });
+    },
+    getMap: () => webViewRef.current || iframeRef.current,
+  }), [sendUpdate, activeLat, activeLng, fitPadding]);
 
   const onWebViewLoad = useCallback(() => {
     isLoadedRef.current = true;
@@ -125,6 +168,7 @@ const MapPreview = forwardRef(function MapPreview(
       route: routeCoordinates,
       duration: durationText,
       markers: leafletMarkers,
+      autoFit,
     });
     if (region?.latitude && region?.longitude) {
       sendUpdate({
@@ -133,7 +177,7 @@ const MapPreview = forwardRef(function MapPreview(
         lng: region.longitude,
       });
     }
-  }, [routeCoordinates, durationText, leafletMarkers, region?.latitude, region?.longitude, sendUpdate]);
+  }, [routeCoordinates, durationText, leafletMarkers, region?.latitude, region?.longitude, sendUpdate, autoFit]);
 
   // Sync route and markers when they change without reloading the page
   useEffect(() => {
@@ -143,9 +187,10 @@ const MapPreview = forwardRef(function MapPreview(
         route: routeCoordinates,
         duration: durationText,
         markers: leafletMarkers,
+        autoFit,
       });
     }
-  }, [routeCoordinates, durationText, leafletMarkers, sendUpdate]);
+  }, [routeCoordinates, durationText, leafletMarkers, sendUpdate, autoFit]);
 
   // Sync region changes
   useEffect(() => {
@@ -165,6 +210,10 @@ const MapPreview = forwardRef(function MapPreview(
         onRegionChangeComplete({ latitude: data.lat, longitude: data.lng, zoom: data.zoom });
       } else if (data.type === 'map_click' && onMapPress) {
         onMapPress({ latitude: data.lat, longitude: data.lng });
+      } else if (data.type === 'user_interaction_start' && onUserInteractionStart) {
+        onUserInteractionStart(data);
+      } else if (data.type === 'user_interaction_end' && onUserInteractionEnd) {
+        onUserInteractionEnd(data);
       }
     } catch (e) {}
   };
@@ -178,13 +227,17 @@ const MapPreview = forwardRef(function MapPreview(
             onRegionChangeComplete({ latitude: data.lat, longitude: data.lng, zoom: data.zoom });
           } else if (data.type === 'map_click' && onMapPress) {
             onMapPress({ latitude: data.lat, longitude: data.lng });
+          } else if (data.type === 'user_interaction_start' && onUserInteractionStart) {
+            onUserInteractionStart(data);
+          } else if (data.type === 'user_interaction_end' && onUserInteractionEnd) {
+            onUserInteractionEnd(data);
           }
         } catch (err) {}
       };
       window.addEventListener('message', handler);
       return () => window.removeEventListener('message', handler);
     }
-  }, [onRegionChangeComplete, onMapPress]);
+  }, [onRegionChangeComplete, onMapPress, onUserInteractionStart, onUserInteractionEnd]);
 
   const isWeb = Platform.OS === 'web';
   const WebViewComp = !isWeb && !useStaticFallback ? getWebViewComponent() : null;

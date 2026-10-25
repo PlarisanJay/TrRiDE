@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, KeyboardAvoidingView } from 'react-native';
+import { View, Text, Image, StyleSheet, TextInput, TouchableOpacity, ScrollView, KeyboardAvoidingView } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { COLORS, TYPOGRAPHY, SPACING, ROUNDED, SHADOWS } from '../../theme';
 import { alertDialog } from '../../lib/dialog';
@@ -66,6 +66,12 @@ export default function LoginScreen({ onLoginSuccess, onSignUp }) {
       <ScrollView contentContainerStyle={styles.scrollContainer} keyboardShouldPersistTaps="handled">
         {/* Top Logo */}
         <View style={styles.header}>
+          <Image
+            source={require('../../assets/splash-icon.png')}
+            style={styles.logoImage}
+            resizeMode="contain"
+            accessibilityLabel="TriRide logo"
+          />
           <TriRideTextLogo size="medium" />
         </View>
 
@@ -167,6 +173,11 @@ const styles = StyleSheet.create({
   header: {
     alignItems: 'center',
     marginBottom: SPACING.lg,
+  },
+  logoImage: {
+    width: 110,
+    height: 110,
+    marginBottom: SPACING.sm,
   },
   logoText: {
     ...TYPOGRAPHY.headlineLgMobile,

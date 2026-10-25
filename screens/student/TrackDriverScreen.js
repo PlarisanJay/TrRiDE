@@ -15,6 +15,8 @@ import {
 } from '../../theme';
 import { TOLEDO_CITY, fetchRoute, haversineDistance, formatDistanceText, formatDurationText } from '../../config/mapConfig';
 import { getTripById, subscribeToTrip, cancelTripWithReason } from '../../data/trips';
+import { ENABLE_MULTI_PASSENGER_RIDE } from '../../config/features';
+import { isPassengerCancelLocked } from '../../data/multiPassenger';
 import { getProfileById } from '../../data/auth';
 import { supabase } from '../../config/supabase';
 import MapPreview from '../../components/MapPreview';
@@ -35,6 +37,7 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
   const [driverCoords, setDriverCoords] = useState(null);
   const [driverStatusText, setDriverStatusText] = useState('ON THE WAY');
   const [showCancelModal, setShowCancelModal] = useState(false);
+  const [cancelLocked, setCancelLocked] = useState(false);
 
   const mapRef = useRef(null);
   const isWideWeb = useWideWeb();
@@ -204,6 +207,43 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
     }
   }, [driverCoords, trip?.pickup_lat, trip?.pickup_lng]);
 
+  // Keep the cancel button visibly disabled when this passenger is the
+  // current pick-up target of a multi-passenger trip. Feature-flag gated.
+  useEffect(() => {
+    let mounted = true;
+    if (
+      !ENABLE_MULTI_PASSENGER_RIDE ||
+      !trip ||
+      trip.status !== 'accepted' ||
+      !trip.driver_id
+    ) {
+      setCancelLocked(false);
+      return () => {
+        mounted = false;
+      };
+    }
+
+    const checkLock = () => {
+      isPassengerCancelLocked(trip)
+        .then((locked) => {
+          if (mounted) setCancelLocked(Boolean(locked));
+        })
+        .catch(() => {
+          if (mounted) setCancelLocked(false);
+        });
+    };
+
+    checkLock();
+    // Other passengers' trips are not readable under RLS, so refresh the
+    // server-computed lock while this passenger is waiting.
+    const pollTimer = setInterval(checkLock, 15000);
+
+    return () => {
+      mounted = false;
+      clearInterval(pollTimer);
+    };
+  }, [trip?.id, trip?.status, trip?.driver_id, trip?.accepted_at]);
+
   const handleCall = () => {
     if (driver?.phone) {
       Linking.openURL(`tel:${driver.phone}`).catch(() => {
@@ -214,7 +254,7 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
     }
   };
 
-  const handleCancelPress = () => {
+  const handleCancelPress = async () => {
     if (trip?.status === 'in_progress') {
       alertDialog({
         title: 'Ride in Progress',
@@ -223,6 +263,26 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
       });
       return;
     }
+
+    // Multi-passenger rule: the passenger currently being picked up cannot
+    // cancel. Other passengers further down the queue can still cancel.
+    if (ENABLE_MULTI_PASSENGER_RIDE && trip) {
+      try {
+        const locked = await isPassengerCancelLocked(trip);
+        if (locked) {
+          setCancelLocked(true);
+          alertDialog({
+            title: 'Pick-up in Progress',
+            message:
+              'Your driver is already heading to pick you up, so this ride can no longer be cancelled.',
+          });
+          return;
+        }
+      } catch (e) {
+        // If the lock check fails, keep the normal cancel flow available.
+      }
+    }
+
     setShowCancelModal(true);
   };
 
@@ -431,17 +491,35 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
 
           {trip.status !== 'completed' && trip.status !== 'cancelled' && (
             <TouchableOpacity
-              style={[styles.btnCancel, cancelling && styles.btnCancelDisabled]}
+              style={[
+                styles.btnCancel,
+                (cancelling || cancelLocked) && styles.btnCancelDisabled,
+              ]}
               activeOpacity={0.8}
               onPress={handleCancelPress}
-              disabled={cancelling}
+              disabled={cancelling || cancelLocked}
             >
               {cancelling ? (
                 <ActivityIndicator size="small" color={COLORS.error} />
               ) : (
-                <MaterialIcons name="cancel" size={18} color={COLORS.error} />
+                <MaterialIcons
+                  name={cancelLocked ? 'lock' : 'cancel'}
+                  size={18}
+                  color={cancelLocked ? COLORS.outline : COLORS.error}
+                />
               )}
-              <Text style={styles.btnCancelText}>{cancelling ? 'Cancelling...' : 'Cancel Ride'}</Text>
+              <Text
+                style={[
+                  styles.btnCancelText,
+                  cancelLocked && { color: COLORS.outline },
+                ]}
+              >
+                {cancelling
+                  ? 'Cancelling...'
+                  : cancelLocked
+                    ? 'Pick-up in progress'
+                    : 'Cancel Ride'}
+              </Text>
             </TouchableOpacity>
           )}
         </ScrollView>

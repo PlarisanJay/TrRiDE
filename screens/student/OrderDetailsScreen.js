@@ -14,8 +14,10 @@ import {
   BORDERS,
 } from '../../theme';
 import { getTripById, cancelTripWithReason, subscribeToTrip } from '../../data/trips';
+import { ENABLE_MULTI_PASSENGER_RIDE } from '../../config/features';
+import { isPassengerCancelLocked } from '../../data/multiPassenger';
 import { getProfileById } from '../../data/auth';
-import { createRating, hasRatedTrip } from '../../data/ratings';
+
 import { TOLEDO_CITY, fetchRoute, haversineDistance, formatDistanceText, formatDurationText } from '../../config/mapConfig';
 import { supabase } from '../../config/supabase';
 import MapPreview from '../../components/MapPreview';
@@ -28,8 +30,7 @@ export default function OrderDetailsScreen({ userProfile, tripId, onGoBack, onNa
   const [driver, setDriver] = useState(null);
   const [loading, setLoading] = useState(true);
   const [cancelling, setCancelling] = useState(false);
-  const [submittedRating, setSubmittedRating] = useState(0);
-  const [submitting, setSubmitting] = useState(false);
+
 
   // Live driver & route states
   const [driverCoords, setDriverCoords] = useState(null);
@@ -38,6 +39,7 @@ export default function OrderDetailsScreen({ userProfile, tripId, onGoBack, onNa
   const [routeDistance, setRouteDistance] = useState('');
   const [routeDuration, setRouteDuration] = useState('30 MIN');
   const [showCancelModal, setShowCancelModal] = useState(false);
+  const [cancelLocked, setCancelLocked] = useState(false);
 
   const mapRef = useRef(null);
   const isWideWeb = useWideWeb();
@@ -64,14 +66,6 @@ export default function OrderDetailsScreen({ userProfile, tripId, onGoBack, onNa
           } catch (e) {
             console.warn('Could not load driver profile:', e.message);
           }
-          if (t.status === 'completed') {
-            try {
-              const rated = await hasRatedTrip(tripId, userProfile?.id);
-              if (rated) setSubmittedRating(rated.rating);
-            } catch (e) {
-              console.warn('Could not load existing rating:', e.message);
-            }
-          }
         }
       } catch (e) {
         console.error('Failed to load trip:', e);
@@ -86,14 +80,6 @@ export default function OrderDetailsScreen({ userProfile, tripId, onGoBack, onNa
           const d = await getProfileById(updated.driver_id);
           setDriver(d);
         } catch (e) {}
-      }
-      if (updated.status === 'completed') {
-        try {
-          const rated = await hasRatedTrip(tripId, userProfile?.id);
-          if (rated) setSubmittedRating(rated.rating);
-        } catch (e) {
-          console.warn('Could not load existing rating:', e.message);
-        }
       }
       if (updated.status === 'cancelled' && !hasHandledCancelRef.current) {
         hasHandledCancelRef.current = true;
@@ -118,14 +104,6 @@ export default function OrderDetailsScreen({ userProfile, tripId, onGoBack, onNa
         setTrip(t);
         if (t.status === 'completed' || t.status === 'cancelled') {
           clearInterval(pollTimer);
-          if (t.status === 'completed') {
-            try {
-              const rated = await hasRatedTrip(tripId, userProfile?.id);
-              if (rated) setSubmittedRating(rated.rating);
-            } catch (e) {
-              console.warn('Could not load existing rating:', e.message);
-            }
-          }
         }
       } catch (e) {}
     }, 4000);
@@ -273,25 +251,47 @@ export default function OrderDetailsScreen({ userProfile, tripId, onGoBack, onNa
   };
 
   const handleSubmitRating = async (stars) => {
-    if (!trip?.driver_id || submitting || submittedRating) return;
-    setSubmitting(true);
-    try {
-      await createRating({
-        tripId: trip.id,
-        driverId: trip.driver_id,
-        studentId: userProfile.id,
-        rating: stars,
-      });
-      setSubmittedRating(stars);
-    } catch (e) {
-      console.warn('Could not submit rating:', e.message);
-      alertDialog({ title: 'Error', message: 'Could not submit rating. Please try again.' });
-    } finally {
-      setSubmitting(false);
-    }
+    // Rating feature removed
   };
 
-  const handleCancelPress = () => {
+  // Keep the cancel button visibly disabled when this passenger is the
+  // current pick-up target of a multi-passenger trip. Feature-flag gated.
+  useEffect(() => {
+    let mounted = true;
+    if (
+      !ENABLE_MULTI_PASSENGER_RIDE ||
+      !trip ||
+      trip.status !== 'accepted' ||
+      !trip.driver_id
+    ) {
+      setCancelLocked(false);
+      return () => {
+        mounted = false;
+      };
+    }
+
+    const checkLock = () => {
+      isPassengerCancelLocked(trip)
+        .then((locked) => {
+          if (mounted) setCancelLocked(Boolean(locked));
+        })
+        .catch(() => {
+          if (mounted) setCancelLocked(false);
+        });
+    };
+
+    checkLock();
+    // Other passengers' trips are not readable under RLS, so refresh the
+    // server-computed lock while this passenger is waiting.
+    const pollTimer = setInterval(checkLock, 15000);
+
+    return () => {
+      mounted = false;
+      clearInterval(pollTimer);
+    };
+  }, [trip?.id, trip?.status, trip?.driver_id, trip?.accepted_at]);
+
+  const handleCancelPress = async () => {
     if (trip?.status === 'in_progress') {
       alertDialog({
         title: 'Ride in Progress',
@@ -300,6 +300,26 @@ export default function OrderDetailsScreen({ userProfile, tripId, onGoBack, onNa
       });
       return;
     }
+
+    // Multi-passenger rule: the passenger currently being picked up cannot
+    // cancel. Other passengers further down the queue can still cancel.
+    if (ENABLE_MULTI_PASSENGER_RIDE && trip) {
+      try {
+        const locked = await isPassengerCancelLocked(trip);
+        if (locked) {
+          setCancelLocked(true);
+          alertDialog({
+            title: 'Pick-up in Progress',
+            message:
+              'Your driver is already heading to pick you up, so this ride can no longer be cancelled.',
+          });
+          return;
+        }
+      } catch (e) {
+        // If the lock check fails, keep the normal cancel flow available.
+      }
+    }
+
     setShowCancelModal(true);
   };
 
@@ -510,44 +530,40 @@ export default function OrderDetailsScreen({ userProfile, tripId, onGoBack, onNa
             </View>
           </View>
 
-          {/* Rating Card */}
-          {trip.status === 'completed' && (
-            <View style={[styles.ratingCard]}>
-              <MaterialIcons name="star" size={24} color={ACCENT.amber} />
-              <View style={styles.ratingTextWrap}>
-                <Text style={styles.ratingTitle}>
-                  {submittedRating ? `You rated ${submittedRating} ${submittedRating > 1 ? 'stars' : 'star'}` : 'Rate your driver'}
-                </Text>
-                <Text style={styles.ratingText}>
-                  {submittedRating ? 'Thanks for your feedback!' : 'How was your ride? Tap a star to rate your driver.'}
-                </Text>
-              </View>
-              {!submittedRating && (
-                <View style={styles.starRow}>
-                  {[1, 2, 3, 4, 5].map((star) => (
-                    <TouchableOpacity key={star} disabled={submitting} onPress={() => handleSubmitRating(star)}>
-                      <MaterialIcons name={submitting ? 'star-border' : 'star'} size={32} color={submitting ? COLORS.outlineVariant : ACCENT.amber} />
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              )}
-            </View>
-          )}
+          {/* Rating removed */}
 
           {/* Cancel Ride Action */}
           {trip.status !== 'completed' && trip.status !== 'cancelled' && (
             <TouchableOpacity
-              style={[styles.btnCancel, cancelling && styles.btnCancelDisabled]}
+              style={[
+                styles.btnCancel,
+                (cancelling || cancelLocked) && styles.btnCancelDisabled,
+              ]}
               activeOpacity={0.8}
               onPress={handleCancelPress}
-              disabled={cancelling}
+              disabled={cancelling || cancelLocked}
             >
               {cancelling ? (
                 <ActivityIndicator size="small" color={COLORS.error} />
               ) : (
-                <MaterialIcons name="cancel" size={18} color={COLORS.error} />
+                <MaterialIcons
+                  name={cancelLocked ? 'lock' : 'cancel'}
+                  size={18}
+                  color={cancelLocked ? COLORS.outline : COLORS.error}
+                />
               )}
-              <Text style={styles.btnCancelText}>{cancelling ? 'Cancelling...' : 'Cancel Ride'}</Text>
+              <Text
+                style={[
+                  styles.btnCancelText,
+                  cancelLocked && { color: COLORS.outline },
+                ]}
+              >
+                {cancelling
+                  ? 'Cancelling...'
+                  : cancelLocked
+                    ? 'Pick-up in progress'
+                    : 'Cancel Ride'}
+              </Text>
             </TouchableOpacity>
           )}
         </ScrollView>

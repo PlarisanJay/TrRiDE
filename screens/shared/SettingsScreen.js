@@ -5,7 +5,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { COLORS, TYPOGRAPHY, SPACING, ROUNDED, SHADOWS } from '../../theme';
 import { resolveInstallTarget, startInstall } from '../../lib/installApp';
 
-export default function SettingsScreen({ userProfile, onBack }) {
+export default function SettingsScreen({ userProfile, onBack, onNavigate }) {
   // These three are intentionally inert. There is no preference store wired up
   // (no AsyncStorage dependency, no theme provider), so the switches used to
   // flip local state and silently reset on every app restart while implying a
@@ -96,20 +96,29 @@ export default function SettingsScreen({ userProfile, onBack }) {
         },
       ],
     },
+    // Removed Appearance/Dark Mode section
     {
-      title: 'Appearance',
+      title: 'Safety & Reports',
       items: [
         {
-          id: 'dark',
-          label: 'Dark Mode',
-          note: 'Not available yet',
-          icon: 'dark-mode',
-          type: 'toggle',
-          value: darkMode,
-          onToggle: () => {},
+          id: 'blocked',
+          label: 'Blocked Users',
+          note: 'Manage users you blocked',
+          icon: 'block',
+          type: 'action',
+          onPress: () => onNavigate && onNavigate('BlockedUsers'),
+        },
+        {
+          id: 'myreports',
+          label: 'My Reports',
+          note: 'View and reply to your reports',
+          icon: 'report',
+          type: 'action',
+          onPress: () => onNavigate && onNavigate('MyReports'),
         },
       ],
     },
+    // Removed Notification Center to fix duplicate key error
     {
       title: 'Storage',
       items: [

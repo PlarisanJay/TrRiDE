@@ -45,20 +45,16 @@ export default function SplashScreen({ onFinish }) {
 
   return (
     <View style={styles.container}>
-      {/* Background Decorative Blobs */}
-      <View style={styles.blobTop} />
-      <View style={styles.blobBottom} />
-
       <View style={styles.main}>
         {/* Logo Container */}
         <Animated.View style={[styles.logoOuter, { transform: [{ scale: pulseAnim }] }]}>
-          <View style={styles.logoContainer}>
-            <Image
-              source={require('../../assets/tricycle-icon.png')}
-              style={styles.logoImage}
-              resizeMode="contain"
-            />
-          </View>
+          {/* Same artwork as the native splash (assets/splash-icon.png) so the
+              hand-off from the OS splash to this screen is seamless. */}
+          <Image
+            source={require('../../assets/splash-icon.png')}
+            style={styles.logoImage}
+            resizeMode="contain"
+          />
         </Animated.View>
 
         {/* Title & Subtitle */}
@@ -85,29 +81,9 @@ export default function SplashScreen({ onFinish }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: COLORS.surfaceContainerLowest,
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  blobTop: {
-    position: 'absolute',
-    top: -100,
-    right: -100,
-    width: 250,
-    height: 250,
-    borderRadius: 125,
-    backgroundColor: COLORS.inversePrimary,
-    opacity: 0.15,
-  },
-  blobBottom: {
-    position: 'absolute',
-    bottom: -120,
-    left: -120,
-    width: 300,
-    height: 300,
-    borderRadius: 150,
-    backgroundColor: COLORS.secondaryContainer,
-    opacity: 0.1,
   },
   main: {
     alignItems: 'center',
@@ -115,24 +91,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.marginMobile,
   },
   logoOuter: {
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.15,
-    shadowRadius: 15,
-    elevation: 8,
     marginBottom: SPACING.lg,
   },
-  logoContainer: {
-    width: 120,
-    height: 120,
-    backgroundColor: COLORS.primaryContainer,
-    borderRadius: 24,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
   logoImage: {
-    width: 86,
-    height: 86,
+    width: 140,
+    height: 140,
   },
   title: {
     ...TYPOGRAPHY.headlineLgMobile,

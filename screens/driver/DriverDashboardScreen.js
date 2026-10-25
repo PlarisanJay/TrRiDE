@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Image, TouchableOpacity, ScrollView, Animated, ActivityIndicator, Platform } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { COLORS, TYPOGRAPHY, SPACING, ROUNDED, SHADOWS } from '../../theme';
-import { alertDialog } from '../../lib/dialog';
+import { alertDialog, notifyDialog } from '../../lib/dialog';
 import { getPendingTrips, acceptTrip, declineTrip, subscribeToPendingTrips, subscribeToDriverTrips, getTripById, getDriverStats, getTripsByDriver, getDriverActivePassengerCount, MAX_PASSENGERS } from '../../data/trips';
 import { getProfileById } from '../../data/auth';
 import { getOrCreateConversation } from '../../data/messages';
@@ -13,6 +13,11 @@ import { RequestCardSkeleton } from '../../components/SkeletonLoader';
 import TriRideTextLogo from '../../components/TriRideTextLogo';
 import UserAvatar from '../../components/UserAvatar';
 import { haversineDistance, formatDistanceText, formatDurationText } from '../../config/mapConfig';
+import { ENABLE_MULTI_PASSENGER_RIDE } from '../../config/features';
+import { deriveRouteSegment, isRequestOnDriverRoute } from '../../data/toledoRoadSegments';
+import { saveTripRouteSegment } from '../../data/multiPassenger';
+import { getUnreadNotificationCount } from '../../data/notifications';
+import { supabase } from '../../config/supabase';
 
 const NAV_TABS = [
   { key: 'Home', icon: 'home', label: 'Home' },
@@ -29,9 +34,36 @@ export default function DriverDashboardScreen({ userProfile, activeTripId, onAcc
   const tripStudentsRef = useRef({});
   const [activeTab, setActiveTab] = useState('Home');
   const [activeTrip, setActiveTrip] = useState(null);
+  const [ongoingTrips, setOngoingTrips] = useState([]);
+  const ongoingTripsRef = useRef([]);
   const [driverStats, setDriverStats] = useState({ completedRides: 0, ongoingCount: 0, rating: '—' });
   const [currentPassengers, setCurrentPassengers] = useState(0);
   const currentPassengersRef = useRef(0);
+  const cancelledNotifiedRef = useRef(new Set());
+  const [unreadNotifCount, setUnreadNotifCount] = useState(0);
+
+  // Keep the list of active trips (one row per accepted passenger ride).
+  // Two or more rows means the multi-passenger queue should be offered.
+  const applyOngoingTrips = (trips) => {
+    const list = (trips || []).filter(
+      (t) => t.status === 'accepted' || t.status === 'in_progress'
+    );
+    ongoingTripsRef.current = list;
+    setOngoingTrips(list);
+    setDriverStats((prev) => ({ ...prev, ongoingCount: list.length }));
+    return list;
+  };
+
+  const refreshOngoingTrips = async () => {
+    if (!userProfile?.id) return ongoingTripsRef.current;
+    try {
+      const trips = await getTripsByDriver(userProfile.id);
+      return applyOngoingTrips(trips);
+    } catch (e) {
+      console.warn('Could not refresh ongoing trips:', e.message);
+      return ongoingTripsRef.current;
+    }
+  };
 
   // Load real driver stats
   useEffect(() => {
@@ -46,8 +78,8 @@ export default function DriverDashboardScreen({ userProfile, activeTripId, onAcc
       try {
         const trips = await getTripsByDriver(userProfile?.id);
         if (mounted) {
-          const ongoing = (trips || []).filter((t) => t.status === 'accepted' || t.status === 'in_progress').length;
-          setDriverStats((prev) => ({ ...prev, ongoingCount: ongoing }));
+          const list = applyOngoingTrips(trips);
+          setDriverStats((prev) => ({ ...prev, ongoingCount: list.length }));
         }
       } catch (e) {
         console.warn('Could not load ongoing trips:', e.message);
@@ -84,6 +116,31 @@ export default function DriverDashboardScreen({ userProfile, activeTripId, onAcc
 
   useEffect(() => {
     refreshPassengerCount();
+  }, [userProfile?.id]);
+
+  useEffect(() => {
+    if (!userProfile?.id) {
+      setUnreadNotifCount(0);
+      return;
+    }
+    let mounted = true;
+    const loadCount = async () => {
+      const count = await getUnreadNotificationCount(userProfile.id);
+      if (mounted) setUnreadNotifCount(count);
+    };
+    loadCount();
+    const interval = setInterval(loadCount, 10000);
+    const channel = supabase
+      .channel(`notif-driver-${userProfile.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications', filter: `user_id=eq.${userProfile.id}` }, () => {
+        loadCount();
+      })
+      .subscribe();
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+      try { supabase.removeChannel(channel); } catch (e) {}
+    };
   }, [userProfile?.id]);
 
   // Per-tab scale animations
@@ -125,6 +182,15 @@ export default function DriverDashboardScreen({ userProfile, activeTripId, onAcc
             return;
           }
 
+          // Multi-passenger rule: only show requests on the same fixed
+          // route/direction. This is a no-op until segment data exists.
+          if (
+            ENABLE_MULTI_PASSENGER_RIDE &&
+            !isRequestOnDriverRoute(trip, ongoingTripsRef.current)
+          ) {
+            return;
+          }
+
           setPendingTrips((prev) => {
             if (prev.some((t) => t.id === trip.id)) return prev;
             return [trip, ...prev];
@@ -139,6 +205,12 @@ export default function DriverDashboardScreen({ userProfile, activeTripId, onAcc
 
           if (available <= 0 || needed > available) {
             // Exceeds available capacity -> remove from this driver's screen
+            setPendingTrips((prev) => prev.filter((t) => t.id !== trip.id));
+          } else if (
+            ENABLE_MULTI_PASSENGER_RIDE &&
+            !isRequestOnDriverRoute(trip, ongoingTripsRef.current)
+          ) {
+            // Not on the same fixed route/direction as the active trip.
             setPendingTrips((prev) => prev.filter((t) => t.id !== trip.id));
           } else {
             setPendingTrips((prev) =>
@@ -159,7 +231,26 @@ export default function DriverDashboardScreen({ userProfile, activeTripId, onAcc
     });
 
     // Real-time capacity listener: when driver completes, starts, or accepts a trip
-    const unsubDriverTrips = subscribeToDriverTrips(userProfile?.id, () => {
+    const unsubDriverTrips = subscribeToDriverTrips(userProfile?.id, (payload) => {
+      // In-app notice when a passenger cancels an already-accepted ride.
+      // Driver-initiated cancellations and unaccepted requests are ignored.
+      const updated = payload?.new;
+      if (
+        ENABLE_MULTI_PASSENGER_RIDE &&
+        ongoingTripsRef.current.length >= 2 &&
+        updated?.status === 'cancelled' &&
+        updated?.accepted_at &&
+        !String(updated?.notes || '').includes('[Cancelled by Driver:') &&
+        !cancelledNotifiedRef.current.has(updated.id)
+      ) {
+        cancelledNotifiedRef.current.add(updated.id);
+        const student = tripStudentsRef.current[updated.student_id];
+        notifyDialog({
+          title: 'Passenger Cancelled',
+          message: `${student?.full_name || 'A passenger'} cancelled their ride. The seat is now free.`,
+        });
+      }
+
       refreshPassengerCount().then((newCount) => {
         const available = Math.max(0, MAX_PASSENGERS - (newCount || 0));
         setPendingTrips((prev) => {
@@ -168,11 +259,13 @@ export default function DriverDashboardScreen({ userProfile, activeTripId, onAcc
         });
         loadPendingTrips(false);
       });
+      refreshOngoingTrips();
     });
 
     // 15-second silent background poll that NEVER wipes cards or shows skeletons
     const pollTimer = setInterval(() => {
       loadPendingTrips(false);
+      refreshOngoingTrips();
       if (activeTripId) loadActiveTrip(activeTripId);
     }, 15000);
 
@@ -209,7 +302,15 @@ export default function DriverDashboardScreen({ userProfile, activeTripId, onAcc
 
       // Query only trips that fit this driver's available seats
       const trips = await getPendingTrips(available);
-      const suitableTrips = (trips || []).filter((t) => (t.passengers || 1) <= available);
+      let suitableTrips = (trips || []).filter((t) => (t.passengers || 1) <= available);
+
+      // Multi-passenger rule: show only requests that match the fixed
+      // road segment + direction of the active trip.
+      if (ENABLE_MULTI_PASSENGER_RIDE && ongoingTripsRef.current.length > 0) {
+        suitableTrips = suitableTrips.filter((t) =>
+          isRequestOnDriverRoute(t, ongoingTripsRef.current)
+        );
+      }
 
       setPendingTrips((prev) => {
         if (
@@ -264,6 +365,29 @@ export default function DriverDashboardScreen({ userProfile, activeTripId, onAcc
       return;
     }
 
+    // Multi-passenger rule: refuse a request that is not on the same fixed
+    // route/direction. This never runs while segment data is empty.
+    if (
+      ENABLE_MULTI_PASSENGER_RIDE &&
+      !isRequestOnDriverRoute(trip, ongoingTripsRef.current)
+    ) {
+      alertDialog({
+        title: 'Different Route',
+        message: 'This request is not on the same route and direction as your current trip.',
+      });
+      setPendingTrips((prev) => prev.filter((t) => t.id !== tripId));
+      return;
+    }
+
+    // If another trip is already active, accepting this one starts the
+    // multi-passenger queue instead of the single-passenger screen.
+    const shouldOpenMulti =
+      ENABLE_MULTI_PASSENGER_RIDE &&
+      (ongoingTripsRef.current.some(
+        (t) => t.id !== tripId && (t.status === 'accepted' || t.status === 'in_progress')
+      ) ||
+        Boolean(activeTripId && activeTripId !== tripId));
+
     setAcceptingId(tripId);
     try {
       // Pre-save active trip to local storage so CurrentTripScreen has it immediately
@@ -291,6 +415,22 @@ export default function DriverDashboardScreen({ userProfile, activeTripId, onAcc
       const acceptedTrip = await acceptTrip(tripId, userProfile.id, trip?.passengers);
       if (acceptedTrip) {
         saveActiveTrip(acceptedTrip).catch(() => {});
+        const nextOngoing = [
+          ...ongoingTripsRef.current.filter((t) => t.id !== acceptedTrip.id),
+          acceptedTrip,
+        ];
+        ongoingTripsRef.current = nextOngoing;
+        setOngoingTrips(nextOngoing);
+        setDriverStats((prev) => ({ ...prev, ongoingCount: nextOngoing.length }));
+
+        // Record the fixed road segment/direction when approved segment data
+        // exists. Currently a no-op because the registry is empty.
+        if (ENABLE_MULTI_PASSENGER_RIDE) {
+          const segment = deriveRouteSegment(acceptedTrip);
+          if (segment) {
+            saveTripRouteSegment(acceptedTrip.id, segment).catch(() => {});
+          }
+        }
       }
 
       // Non-blocking background operations
@@ -299,8 +439,8 @@ export default function DriverDashboardScreen({ userProfile, activeTripId, onAcc
       }
       refreshPassengerCount().catch(() => {});
 
-      // Immediately navigate to CurrentTripScreen with ZERO delay!
-      onAcceptRide(tripId);
+      // Immediately navigate to the correct ongoing screen with ZERO delay!
+      onAcceptRide(tripId, { openMulti: shouldOpenMulti });
     } catch (e) {
       console.log('handleAccept error:', e?.message);
       clearActiveTrip().catch(() => {});
@@ -331,6 +471,20 @@ export default function DriverDashboardScreen({ userProfile, activeTripId, onAcc
     }
   };
 
+  const ongoingSeatTotal = ongoingTrips.reduce(
+    (total, trip) => total + (Number(trip.passengers) || 1),
+    0
+  );
+
+  // When multi-passenger mode is on, fall back to the remaining active trip
+  // if activeTripId points at a trip that was already completed in the queue.
+  const bannerTrip =
+    activeTrip && (activeTrip.status === 'accepted' || activeTrip.status === 'in_progress')
+      ? activeTrip
+      : ENABLE_MULTI_PASSENGER_RIDE && ongoingTrips.length === 1
+        ? ongoingTrips[0]
+        : null;
+
   return (
     <View style={styles.container}>
       {/* Header */}
@@ -343,6 +497,16 @@ export default function DriverDashboardScreen({ userProfile, activeTripId, onAcc
               {isOnline ? 'ONLINE' : 'OFFLINE'}
             </Text>
           </View>
+          <TouchableOpacity style={styles.avatarBtn} onPress={() => onNavigate('Notifications')} activeOpacity={0.8}>
+            <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: COLORS.surfaceContainerLow, justifyContent: 'center', alignItems: 'center' }}>
+              <MaterialIcons name="notifications" size={22} color={COLORS.onSurface} />
+              {unreadNotifCount > 0 && (
+                <View style={{ position: 'absolute', top: 2, right: 2, minWidth: 16, height: 16, borderRadius: 8, backgroundColor: COLORS.error, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 3 }}>
+                  <Text style={{ color: '#fff', fontSize: 9, fontWeight: '800' }}>{unreadNotifCount > 9 ? '9+' : unreadNotifCount}</Text>
+                </View>
+              )}
+            </View>
+          </TouchableOpacity>
           <TouchableOpacity style={styles.avatarBtn} onPress={() => onNavigate('Profile')} activeOpacity={0.8}>
             <UserAvatar
               uri={userProfile?.avatar_url}
@@ -375,7 +539,17 @@ export default function DriverDashboardScreen({ userProfile, activeTripId, onAcc
 
           <View style={styles.statDivider} />
 
-          <TouchableOpacity style={styles.statCard} activeOpacity={0.7} onPress={() => onNavigate('DriverTrips')}>
+          <TouchableOpacity
+            style={styles.statCard}
+            activeOpacity={0.7}
+            onPress={() => {
+              if (ENABLE_MULTI_PASSENGER_RIDE && ongoingTrips.length >= 2) {
+                onNavigate('MultiPassengerRide');
+              } else {
+                onNavigate('DriverTrips');
+              }
+            }}
+          >
             <MaterialIcons name="directions-car" size={20} color={COLORS.secondary} />
             <Text style={styles.statNumber}>{driverStats.ongoingCount}</Text>
             <Text style={styles.statLabel}>Ongoing</Text>
@@ -403,18 +577,42 @@ export default function DriverDashboardScreen({ userProfile, activeTripId, onAcc
         </View>
 
         {/* Persistent Ongoing Ride Banner (if active) */}
-        {activeTrip && (
+        {ENABLE_MULTI_PASSENGER_RIDE && ongoingTrips.length >= 2 ? (
           <TouchableOpacity
             style={[styles.ongoingBanner, SHADOWS.card]}
             activeOpacity={0.9}
-            onPress={() => onAcceptRide(activeTrip.id)}
+            onPress={() => onNavigate('MultiPassengerRide')}
           >
             <View style={styles.ongoingLeft}>
               <View style={styles.pulseDot} />
-              <View>
+              <View style={styles.ongoingTextWrap}>
+                <Text style={styles.ongoingTitle}>
+                  {`${ongoingSeatTotal || currentPassengers} Passenger${
+                    (ongoingSeatTotal || currentPassengers) === 1 ? '' : 's'
+                  } Active`}
+                </Text>
+                <Text style={styles.ongoingSub} numberOfLines={1}>
+                  {ongoingTrips.length} rides • Tap to manage pick-ups & drop-offs
+                </Text>
+              </View>
+            </View>
+            <View style={styles.resumeBtn}>
+              <Text style={styles.resumeBtnText}>Manage</Text>
+              <MaterialIcons name="arrow-forward" size={16} color="#ffffff" />
+            </View>
+          </TouchableOpacity>
+        ) : bannerTrip ? (
+          <TouchableOpacity
+            style={[styles.ongoingBanner, SHADOWS.card]}
+            activeOpacity={0.9}
+            onPress={() => onAcceptRide(bannerTrip.id)}
+          >
+            <View style={styles.ongoingLeft}>
+              <View style={styles.pulseDot} />
+              <View style={styles.ongoingTextWrap}>
                 <Text style={styles.ongoingTitle}>Ongoing Trip in Progress</Text>
-                <Text style={styles.ongoingSub}>
-                  {activeTrip.pickup_text} → {activeTrip.dest_text}
+                <Text style={styles.ongoingSub} numberOfLines={1}>
+                  {bannerTrip.pickup_text} → {bannerTrip.dest_text}
                 </Text>
               </View>
             </View>
@@ -423,7 +621,7 @@ export default function DriverDashboardScreen({ userProfile, activeTripId, onAcc
               <MaterialIcons name="arrow-forward" size={16} color="#ffffff" />
             </View>
           </TouchableOpacity>
-        )}
+        ) : null}
 
         {/* Incoming Ride Requests */}
         <View style={styles.section}>
@@ -706,6 +904,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    flex: 1,
+  },
+  ongoingTextWrap: {
     flex: 1,
   },
   pulseDot: {

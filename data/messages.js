@@ -234,6 +234,9 @@ export const getMessagesByTrip = async (tripId) => {
   }
 };
 
+import { createNotification } from './notifications';
+import { sendLocalNotification } from './pushNotifications';
+
 /**
  * Send a message (text or image attachment).
  */
@@ -271,6 +274,53 @@ export const sendMessage = async ({ tripId, conversationId, senderId, text, medi
       .single();
 
     if (error) throw error;
+
+    // Notify recipient about new message
+    try {
+      const convId = resolvedConvId || conversationId;
+      if (convId) {
+        const { data: conv } = await supabase
+          .from('conversations')
+          .select('student_id, driver_id')
+          .eq('id', convId)
+          .single();
+        if (conv) {
+          const recipientId = conv.student_id === senderId ? conv.driver_id : conv.student_id;
+          if (recipientId) {
+            const preview = (text || '').substring(0, 100);
+            createNotification({
+              userId: recipientId,
+              type: 'message',
+              title: 'New Message',
+              body: preview || 'You have a new message',
+              data: { screen: 'Messages', tripId: tripId || null, conversationId: convId },
+            }).catch(() => {});
+            sendLocalNotification('New Message', preview || 'You have a new message', { screen: 'Messages', tripId: tripId || null, conversationId: convId }).catch(() => {});
+          }
+        }
+      } else if (tripId) {
+        const { data: tripData } = await supabase
+          .from('trips')
+          .select('student_id, driver_id')
+          .eq('id', tripId)
+          .single();
+        if (tripData) {
+          const recipientId = tripData.student_id === senderId ? tripData.driver_id : tripData.student_id;
+          if (recipientId) {
+            const preview = (text || '').substring(0, 100);
+            createNotification({
+              userId: recipientId,
+              type: 'message',
+              title: 'New Message',
+              body: preview || 'You have a new message',
+              data: { screen: 'Messages', tripId },
+            }).catch(() => {});
+            sendLocalNotification('New Message', preview || 'You have a new message', { screen: 'Messages', tripId }).catch(() => {});
+          }
+        }
+      }
+    } catch (e) {}
+
     return data;
   } catch (err) {
     console.warn('Error sending message:', err.message);

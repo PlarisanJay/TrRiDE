@@ -23,12 +23,18 @@ import BookingConfirmedScreen from './screens/student/BookingConfirmedScreen';
 import MyOrdersScreen from './screens/student/MyOrdersScreen';
 import DriverDashboardScreen from './screens/driver/DriverDashboardScreen';
 import CurrentTripScreen from './screens/driver/CurrentTripScreen';
+import MultiPassengerRideScreen from './screens/driver/MultiPassengerRideScreen';
 import DriverCompletedRidesScreen from './screens/driver/DriverCompletedRidesScreen';
 import DriverTripsScreen from './screens/driver/DriverTripsScreen';
 import AdminDashboardScreen from './screens/admin/AdminDashboardScreen';
 import MessagesScreen from './screens/shared/MessagesScreen';
 import ProfileScreen from './screens/shared/ProfileScreen';
 import SettingsScreen from './screens/shared/SettingsScreen';
+import BlockedUsersScreen from './screens/shared/BlockedUsersScreen';
+import MyReportsScreen from './screens/shared/MyReportsScreen';
+import ReportDetailScreen from './screens/shared/ReportDetailScreen';
+import NotificationsScreen from './screens/shared/NotificationsScreen';
+import ReportUserScreen from './screens/shared/ReportUserScreen';
 import BottomNavBar from './components/BottomNavBar';
 import DialogHost from './components/DialogHost';
 import ScreenFrame from './components/ScreenFrame';
@@ -41,8 +47,10 @@ import { getCurrentSession, getCurrentProfile, signOut, setDriverOnlineStatus } 
 import { supabase } from './config/supabase';
 import { subscribeToAllUserMessages, getUnreadMessagesCount } from './data/messages';
 import { getActiveTrip, clearActiveTrip } from './data/activeTripStore';
-import { registerForPushNotifications } from './data/pushNotifications';
+import { registerForPushNotifications, addNotificationReceivedListener, addNotificationResponseListener } from './data/pushNotifications';
 import { getTripsByStudent } from './data/trips';
+import { getActiveModeration } from './data/moderation';
+import { alertDialog } from './lib/dialog';
 
 const getDashboardForRole = (role) => {
   if (role === 'admin') return 'AdminDashboard';
@@ -268,6 +276,44 @@ function AppRouter() {
     };
   }, [userProfile?.id, userRole]);
 
+  // Handle push notifications (foreground + background/opened)
+  useEffect(() => {
+    const receivedSub = addNotificationReceivedListener((notification) => {
+      // Refresh unread counts when notification received
+      if (userProfile?.id) {
+        getUnreadMessagesCount(userProfile.id, userRole).then((count) => {
+          setUnreadCount(count);
+        }).catch(() => {});
+      }
+    });
+
+    const responseSub = addNotificationResponseListener((response) => {
+      try {
+        const data = response?.notification?.request?.content?.data || {};
+        if (data?.screen === 'Messages') {
+          if (typeof data?.tripId === 'string') {
+            setChatTripId(data.tripId);
+          } else if (data?.tripId) {
+            setChatTripId(data.tripId);
+          }
+          navigateTo('Messages');
+        } else if (data?.screen === 'OrderDetails' || data?.screen === 'TrackDriver') {
+          if (data?.tripId) {
+            setActiveTripId(data.tripId);
+          }
+          navigateTo(data.screen);
+        } else if (data?.screen === 'Notifications') {
+          navigateTo('Notifications');
+        }
+      } catch (e) {}
+    });
+
+    return () => {
+      try { receivedSub?.remove?.(); } catch (e) {}
+      try { responseSub?.remove?.(); } catch (e) {}
+    };
+  }, [userProfile?.id, userRole]);
+
   // Refresh unread count when viewing or leaving messages
   useEffect(() => {
     if (userProfile?.id && currentScreen === 'Messages') {
@@ -295,7 +341,15 @@ function AppRouter() {
     } else {
       setChatTripId(null);
     }
-    setScreenHistory((prev) => [...prev, currentScreen]);
+    setScreenHistory((prev) => {
+      if (prev.length > 0 && prev[prev.length - 1] === currentScreen) {
+        return prev;
+      }
+      if (currentScreen === screen) {
+        return prev;
+      }
+      return [...prev, currentScreen];
+    });
     setCurrentScreen(screen);
   };
 
@@ -311,6 +365,8 @@ function AppRouter() {
 
   // Hardware Android back button handling
   const lastBackPressRef = useRef(0);
+  const [reportContext, setReportContext] = useState(null);
+  const [selectedReport, setSelectedReport] = useState(null);
   useEffect(() => {
     const handleHardwareBackPress = () => {
       // 1. If inside an open chat conversation, let MessagesScreen handle it
@@ -341,8 +397,14 @@ function AppRouter() {
         'Settings',
         'DriverTrips',
         'CurrentTrip',
+        'MultiPassengerRide',
         'DriverCompletedRides',
         'Messages',
+        'BlockedUsers',
+        'MyReports',
+        'ReportDetail',
+        'Notifications',
+        'ReportUser',
       ].includes(currentScreen);
 
       if (isSubScreen && userRole) {
@@ -372,7 +434,27 @@ function AppRouter() {
     return () => backSub.remove();
   }, [currentScreen, screenHistory, userRole, isInChat]);
 
-  const handleLoginSuccess = (role, profile) => {
+  const handleLoginSuccess = async (role, profile) => {
+    if (profile?.id) {
+      try {
+        const mod = await getActiveModeration(profile.id);
+        if (mod) {
+          if (mod.action === 'ban') {
+            await alertDialog({ title: 'Account Banned', message: mod.reason ? `Your account has been banned. Reason: ${mod.reason}` : 'Your account has been banned.' });
+            await signOut().catch(() => {});
+            setCurrentScreen('Login');
+            return;
+          }
+          if (mod.action === 'suspend') {
+            await alertDialog({ title: 'Account Suspended', message: mod.reason ? `Your account has been suspended. Reason: ${mod.reason}` : 'Your account has been suspended.' });
+            await signOut().catch(() => {});
+            setCurrentScreen('Login');
+            return;
+          }
+        }
+      } catch (e) {}
+    }
+
     setUserRole(role);
     setUserProfile(profile);
     setScreenHistory([]);
@@ -562,9 +644,13 @@ function AppRouter() {
                 userProfile={userProfile}
                 activeTripId={activeTripId}
                 isOnline={driverOnline}
-                onAcceptRide={(tripId) => {
+                onAcceptRide={(tripId, options = {}) => {
                   setActiveTripId(tripId);
-                  navigateTo('CurrentTrip');
+                  if (options?.openMulti) {
+                    navigateTo('MultiPassengerRide');
+                  } else {
+                    navigateTo('CurrentTrip');
+                  }
                 }}
                 onNavigate={(target) => navigateTo(target)}
               />
@@ -602,6 +688,21 @@ function AppRouter() {
                   clearActiveTrip();
                   setActiveTripId(null);
                   navigateTo('DriverDashboard');
+                }}
+                onNavigate={(target, params) => navigateTo(target, params)}
+              />
+            )}
+  
+            {currentScreen === 'MultiPassengerRide' && (
+              <MultiPassengerRideScreen
+                userProfile={userProfile}
+                onBack={goBack}
+                onAllCompleted={() => {
+                  clearActiveTrip();
+                  setActiveTripId(null);
+                  // Home clears the navigation stack so hardware back cannot
+                  // return to an empty multi-passenger screen.
+                  navigateTo('Home');
                 }}
                 onNavigate={(target, params) => navigateTo(target, params)}
               />
@@ -646,6 +747,59 @@ function AppRouter() {
               <SettingsScreen
                 userProfile={userProfile}
                 onBack={goBack}
+                onNavigate={(screen) => {
+                  if (screen === 'BlockedUsers') { setScreenHistory((prev) => [...prev, currentScreen]); setCurrentScreen('BlockedUsers'); }
+                  else if (screen === 'MyReports') { setScreenHistory((prev) => [...prev, currentScreen]); setCurrentScreen('MyReports'); }
+                  else if (screen === 'Notifications') { setScreenHistory((prev) => [...prev, currentScreen]); setCurrentScreen('Notifications'); }
+                  else navigateTo(screen);
+                }}
+              />
+            )}
+
+            {currentScreen === 'BlockedUsers' && (
+              <BlockedUsersScreen
+                userProfile={userProfile}
+                onBack={goBack}
+              />
+            )}
+
+            {currentScreen === 'MyReports' && (
+              <MyReportsScreen
+                userProfile={userProfile}
+                onBack={goBack}
+                onOpenReport={(report) => {
+                  setSelectedReport(report);
+                  setScreenHistory((prev) => [...prev, currentScreen]);
+                  setCurrentScreen('ReportDetail');
+                }}
+              />
+            )}
+
+            {currentScreen === 'ReportDetail' && selectedReport && (
+              <ReportDetailScreen
+                userProfile={userProfile}
+                report={selectedReport}
+                onBack={goBack}
+              />
+            )}
+
+            {currentScreen === 'Notifications' && (
+              <NotificationsScreen
+                userProfile={userProfile}
+                onBack={goBack}
+                onNavigate={(screen, data) => navigateTo(screen, data)}
+              />
+            )}
+
+            {currentScreen === 'ReportUser' && reportContext && (
+              <ReportUserScreen
+                userProfile={userProfile}
+                reportedUser={reportContext}
+                onBack={goBack}
+                onSubmitted={() => {
+                  setScreenHistory((prev) => prev.slice(0, -1));
+                  setCurrentScreen('MyReports');
+                }}
               />
             )}
   

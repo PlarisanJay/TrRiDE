@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { COLORS, SPACING, ROUNDED } from '../theme';
-import { GEOAPIFY_AUTOCOMPLETE_URL, TOLEDO_CITY } from '../config/mapConfig';
+import { GEOAPIFY_AUTOCOMPLETE_URL, TOLEDO_SEARCH_BIAS, normalizeGeoapifyFeature, toCoordinate } from '../config/mapConfig';
 import { searchToledoLocations } from '../data/toledoLocations';
 
 const GEOAPIFY_API_KEY = process.env.EXPO_PUBLIC_GEOAPIFY_API_KEY;
@@ -31,25 +31,63 @@ export default function PlacesAutocomplete({
     setQuery(value || '');
   }, [value]);
 
+  const abortRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (abortRef.current) abortRef.current.abort();
+    };
+  }, []);
+
+  const toLocalSuggestion = (item) => {
+    const coordinate = toCoordinate({ latitude: item.lat, longitude: item.lon });
+    if (!coordinate) return null;
+    return {
+      id: item.id,
+      placeId: null,
+      formatted: item.formatted || item.title || item.name,
+      title: item.title || item.name,
+      subtext: item.subtext,
+      category: item.category,
+      isLocal: true,
+      coordinate,
+    };
+  };
+
   const fetchSuggestions = (text) => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
     if (!text || text.trim().length < 2) {
       setSuggestions([]);
       setShowDropdown(false);
+      setLoading(false);
       return;
     }
 
     const trimmed = text.trim();
 
-    // 1. Instant match against Toledo City barangays & landmarks
-    const localMatches = searchToledoLocations(trimmed);
+    // 1. Instant match against Toledo City barangays & landmarks.
+    // These are hand-maintained centroids, so they are a fallback only:
+    // when Geoapify returns a place with the same title we prefer the API's
+    // own lat/lon below.
+    const localMatches = searchToledoLocations(trimmed)
+      .map(toLocalSuggestion)
+      .filter(Boolean);
     if (localMatches.length > 0) {
       setSuggestions(localMatches);
       setShowDropdown(true);
     }
 
-    // 2. Fetch Geoapify for supplementary/street-level addresses
+    // 2. Fetch Geoapify for supplementary/street-level addresses.
+    // 400 ms debounce + AbortController: the request for an older keystroke
+    // can never overwrite the suggestions for the current one.
     debounceRef.current = setTimeout(async () => {
+      const controller = new AbortController();
+      abortRef.current = controller;
       setLoading(true);
       try {
         // Normalize abbreviations like "brgy" or "bgy" for geocoder
@@ -59,59 +97,70 @@ export default function PlacesAutocomplete({
 
         const params = new URLSearchParams({
           text: normalizedText,
-          // Bias proximity to Toledo City lon,lat (123.6478, 10.3312)
-          bias: `proximity:${TOLEDO_CITY.longitude},${TOLEDO_CITY.latitude}`,
-          filter: `circle:${TOLEDO_CITY.longitude},${TOLEDO_CITY.latitude},25000`,
+          bias: `proximity:${TOLEDO_SEARCH_BIAS.longitude},${TOLEDO_SEARCH_BIAS.latitude}`,
+          filter: `circle:${TOLEDO_SEARCH_BIAS.longitude},${TOLEDO_SEARCH_BIAS.latitude},${TOLEDO_SEARCH_BIAS.radiusMeters}`,
           countrycode: 'ph',
           limit: '6',
           apiKey: GEOAPIFY_API_KEY,
         });
 
-        const res = await fetch(`${GEOAPIFY_AUTOCOMPLETE_URL}?${params}`);
+        const res = await fetch(`${GEOAPIFY_AUTOCOMPLETE_URL}?${params}`, {
+          signal: controller.signal,
+        });
         const data = await res.json();
+        if (controller.signal.aborted) return;
 
         if (data.features && Array.isArray(data.features)) {
-          const apiItems = data.features.map((f) => {
-            const props = f.properties || {};
-            return {
-              id: props.place_id || `${props.lat}-${props.lon}-${props.formatted}`,
-              formatted: props.formatted,
-              title: props.name || props.address_line1 || props.formatted.split(',')[0],
-              subtext: props.address_line2 || props.city || 'Toledo City, Cebu',
-              lat: props.lat,
-              lon: props.lon,
-            };
+          const apiItems = data.features
+            .map(normalizeGeoapifyFeature)
+            .filter(Boolean)
+            .map((place) => ({
+              id: place.placeId || `${place.coordinate.latitude}-${place.coordinate.longitude}-${place.formatted}`,
+              ...place,
+              isLocal: false,
+            }));
+
+          // Merge by normalized title, then by coordinate. API results are
+          // written last so a precise Geoapify coordinate replaces a local
+          // centroid with the same name.
+          const byTitle = new Map();
+          const keyFor = (item) =>
+            String(item.title || item.formatted || '').trim().toLowerCase();
+          [...localMatches, ...apiItems].forEach((item) => {
+            const key = keyFor(item);
+            if (!key) return;
+            byTitle.set(key, item);
           });
 
-          // Merge local matches with API items, deduplicating by normalized name
-          const merged = [...localMatches];
-          for (const item of apiItems) {
-            const alreadyExists = merged.some(
-              (m) =>
-                m.title.toLowerCase() === item.title.toLowerCase() ||
-                (Math.abs(m.lat - item.lat) < 0.001 && Math.abs(m.lon - item.lon) < 0.001)
-            );
-            if (!alreadyExists) {
-              merged.push(item);
-            }
+          const deduped = [];
+          const seenCoords = new Set();
+          for (const item of byTitle.values()) {
+            const coordKey = `${item.coordinate.latitude.toFixed(5)},${item.coordinate.longitude.toFixed(5)}`;
+            if (seenCoords.has(coordKey)) continue;
+            seenCoords.add(coordKey);
+            deduped.push(item);
           }
 
-          setSuggestions(merged);
-          setShowDropdown(merged.length > 0);
+          setSuggestions(deduped.slice(0, 8));
+          setShowDropdown(deduped.length > 0);
         } else if (localMatches.length > 0) {
           setSuggestions(localMatches);
           setShowDropdown(true);
         }
       } catch (e) {
+        if (e?.name === 'AbortError') return;
         // In case of network error, keep local matches
         if (localMatches.length > 0) {
           setSuggestions(localMatches);
           setShowDropdown(true);
         }
       } finally {
-        setLoading(false);
+        if (abortRef.current === controller) {
+          abortRef.current = null;
+          setLoading(false);
+        }
       }
-    }, 250);
+    }, 400);
   };
 
   const handleChange = (text) => {
@@ -121,22 +170,36 @@ export default function PlacesAutocomplete({
   };
 
   const handleClear = () => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
     setQuery('');
     setSuggestions([]);
     setShowDropdown(false);
+    setLoading(false);
     onChangeText?.('');
   };
 
   const handleSelect = (item) => {
-    const selectedName = item.title ? `${item.title}${item.subtext ? ', ' + item.subtext : ''}` : item.formatted;
-    setQuery(selectedName);
+    // The suggestion already carries the exact coordinate returned by the
+    // API. Never reverse geocode the display text here, and never fall back
+    // to a centroid: if there is no coordinate, the item is not selectable.
+    const coordinate = toCoordinate(item.coordinate);
+    if (!coordinate) return;
+    const formatted =
+      item.formatted ||
+      (item.title ? `${item.title}${item.subtext ? ', ' + item.subtext : ''}` : '');
+    const place = {
+      placeId: item.placeId || null,
+      formatted,
+      coordinate,
+    };
+    setQuery(formatted);
     setShowDropdown(false);
     setSuggestions([]);
-    onSelect?.({
-      text: selectedName,
-      latitude: item.lat,
-      longitude: item.lon,
-    });
+    onSelect?.({ text: formatted, ...place });
   };
 
   const getItemIcon = (item) => {
@@ -199,7 +262,7 @@ export default function PlacesAutocomplete({
         >
           {suggestions.map((item, index) => (
             <TouchableOpacity
-              key={item.id || `${item.lat}-${item.lon}-${index}`}
+              key={item.id || `${item.coordinate.latitude}-${item.coordinate.longitude}-${index}`}
               style={styles.suggestionItem}
               onPress={() => handleSelect(item)}
               activeOpacity={0.7}

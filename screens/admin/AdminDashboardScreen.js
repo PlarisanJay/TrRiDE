@@ -10,6 +10,7 @@ import {
   LayoutAnimation,
   UIManager,
   ActivityIndicator,
+  TextInput,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { COLORS, TYPOGRAPHY, SPACING, ROUNDED, SHADOWS } from '../../theme';
@@ -21,6 +22,11 @@ import {
   rejectUser,
   getUserStats,
 } from '../../data/auth';
+import { applyModeration, liftModeration } from '../../data/moderation';
+import { getReportMessages, sendReportMessage } from '../../data/reports';
+import { createAnnouncement, getActiveAnnouncements } from '../../data/announcements';
+import { createNotification } from '../../data/notifications';
+import { alertDialog, confirmDialog } from '../../lib/dialog';
 
 // ── Phase 3: Batch processing helper ──────────────────────────────────────────
 // Processes an array of items in controlled chunks to avoid overloading the DB.
@@ -46,6 +52,9 @@ const NAV_ITEMS = [
   { key: 'all', label: 'All Users', icon: 'people' },
   { key: 'students', label: 'Students', icon: 'school' },
   { key: 'drivers', label: 'Drivers', icon: 'directions-car' },
+  { key: 'reports', label: 'Reports', icon: 'report' },
+  { key: 'moderations', label: 'Moderation', icon: 'gavel' },
+  { key: 'announcements', label: 'Announcements', icon: 'campaign' },
 ];
 
 export default function AdminDashboardScreen({ userProfile, onBack, onLogout }) {
@@ -401,6 +410,23 @@ export default function AdminDashboardScreen({ userProfile, onBack, onLogout }) 
             </TouchableOpacity>
           </View>
         )}
+
+        {(activeTab === 'all' || activeTab === 'students' || activeTab === 'drivers') && (
+          <View style={styles.userCardActions}>
+            <TouchableOpacity style={[styles.actionBtn, { backgroundColor: COLORS.tertiary }]} onPress={() => handleModerate(user.id, 'warn')}>
+              <Text style={styles.actionBtnText}>Warn</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#d97706' }]} onPress={() => handleModerate(user.id, 'suspend')}>
+              <Text style={styles.actionBtnText}>Suspend</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.actionBtn, styles.rejectBtn]} onPress={() => handleModerate(user.id, 'ban')}>
+              <Text style={styles.actionBtnText}>Ban</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.actionBtn, { backgroundColor: COLORS.secondary }]} onPress={() => handleModerate(user.id, 'lift')}>
+              <Text style={styles.actionBtnText}>Lift</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
     );
   };
@@ -523,6 +549,101 @@ export default function AdminDashboardScreen({ userProfile, onBack, onLogout }) 
     </ScrollView>
   );
 
+  const [reports, setReports] = useState([]);
+  const [selectedReport, setSelectedReport] = useState(null);
+  const [reportMessages, setReportMessages] = useState([]);
+  const [reportMsgText, setReportMsgText] = useState('');
+  const [announcements, setAnnouncements] = useState([]);
+  const [announcementForm, setAnnouncementForm] = useState({ title: '', body: '', audience: 'all' });
+
+  useEffect(() => {
+    if (activeTab === 'reports') {
+      supabase
+        .from('reports')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .then(({ data }) => setReports(data || []));
+    } else if (activeTab === 'announcements') {
+      getActiveAnnouncements(null).then((data) => setAnnouncements(data || []));
+    }
+  }, [activeTab]);
+
+  const openReport = async (report) => {
+    setSelectedReport(report);
+    const msgs = await getReportMessages(report.id);
+    setReportMessages(msgs);
+  };
+
+  const sendReportMsg = async () => {
+    if (!selectedReport || !reportMsgText.trim()) return;
+    try {
+      await sendReportMessage(selectedReport.id, userProfile.id, reportMsgText.trim());
+      setReportMsgText('');
+      const msgs = await getReportMessages(selectedReport.id);
+      setReportMessages(msgs);
+      await supabase
+        .from('reports')
+        .update({ status: 'in_progress', admin_id: userProfile.id, updated_at: new Date().toISOString() })
+        .eq('id', selectedReport.id);
+      showToast('Message sent', 'success');
+    } catch (e) {
+      showToast('Failed to send', 'error');
+    }
+  };
+
+  const updateReportStatus = async (reportId, status, resolution_note = '') => {
+    try {
+      await supabase
+        .from('reports')
+        .update({ status, resolution_note, admin_id: userProfile.id, updated_at: new Date().toISOString() })
+        .eq('id', reportId);
+      showToast('Report updated', 'success');
+      const { data } = await supabase.from('reports').select('*').order('created_at', { ascending: false });
+      setReports(data || []);
+      if (selectedReport?.id === reportId) setSelectedReport({ ...selectedReport, status });
+    } catch (e) {
+      showToast('Failed to update', 'error');
+    }
+  };
+
+  const handleModerate = async (userId, action) => {
+    const reason = action === 'lift' ? '' : 'Moderated by admin';
+    try {
+      if (action === 'lift') {
+        await liftModeration({ userId, adminId: userProfile.id, reason });
+      } else {
+        await applyModeration({ userId, adminId: userProfile.id, action, reason });
+      }
+      // Notify user
+      if (action !== 'lift') {
+        await createNotification({
+          userId,
+          type: action,
+          title: action === 'warn' ? 'Warning' : action === 'suspend' ? 'Account Suspended' : 'Account Banned',
+          body: reason,
+        });
+      }
+      showToast(`User ${action === 'lift' ? 'moderation lifted' : action + 'ed'}`, 'success');
+    } catch (e) {
+      showToast('Failed to moderate', 'error');
+    }
+  };
+
+  const handleCreateAnnouncement = async () => {
+    if (!announcementForm.title || !announcementForm.body) {
+      showToast('Title and body required', 'error');
+      return;
+    }
+    try {
+      await createAnnouncement({ ...announcementForm, createdBy: userProfile.id });
+      showToast('Announcement created', 'success');
+      setAnnouncementForm({ title: '', body: '', audience: 'all' });
+      getActiveAnnouncements(null).then((data) => setAnnouncements(data || []));
+    } catch (e) {
+      showToast('Failed to create', 'error');
+    }
+  };
+
   const renderMainContent = () => (
     <ScrollView contentContainerStyle={[styles.scrollContent, isDesktop && styles.scrollContentDesktop]} showsVerticalScrollIndicator={false}>
       <View style={[styles.welcomeSection, isDesktop && styles.welcomeSectionDesktop]}>
@@ -536,7 +657,15 @@ export default function AdminDashboardScreen({ userProfile, onBack, onLogout }) 
             ? 'Manage all registered users'
             : activeTab === 'students'
             ? 'View all registered students'
-            : 'View all registered drivers'}
+            : activeTab === 'drivers'
+            ? 'View all registered drivers'
+            : activeTab === 'reports'
+            ? 'Manage user reports'
+            : activeTab === 'moderations'
+            ? 'Moderate users'
+            : activeTab === 'announcements'
+            ? 'Manage announcements'
+            : ''}
         </Text>
       </View>
 
@@ -619,7 +748,105 @@ export default function AdminDashboardScreen({ userProfile, onBack, onLogout }) 
           </View>
         )}
 
-        {filteredUsers.length === 0 ? (
+        {activeTab === 'reports' ? (
+          selectedReport ? (
+            <View style={styles.reportDetail}>
+              <TouchableOpacity onPress={() => setSelectedReport(null)} style={styles.backLink}>
+                <MaterialIcons name="arrow-back" size={18} color={COLORS.primary} />
+                <Text style={styles.backLinkText}>Back to reports</Text>
+              </TouchableOpacity>
+              <View style={[styles.userCard, { marginTop: SPACING.md }]}>
+                <Text style={styles.userName}>Report: {selectedReport.reason}</Text>
+                <Text style={styles.userEmail}>Status: {selectedReport.status} | Reporter: {selectedReport.reporter_id?.slice(0,8)} | Reported: {selectedReport.reported_id?.slice(0,8)}</Text>
+                {selectedReport.details ? <Text style={[styles.userDetailText, { marginTop: SPACING.sm }]}>{selectedReport.details}</Text> : null}
+                <View style={styles.userCardActions}>
+                  <TouchableOpacity style={[styles.actionBtn, { backgroundColor: COLORS.primary }]} onPress={() => updateReportStatus(selectedReport.id, 'in_progress')}>
+                    <Text style={styles.actionBtnText}>Mark In Progress</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.actionBtn, { backgroundColor: COLORS.secondary }]} onPress={() => updateReportStatus(selectedReport.id, 'resolved')}>
+                    <Text style={styles.actionBtnText}>Resolve</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.actionBtn, { backgroundColor: COLORS.error }]} onPress={() => updateReportStatus(selectedReport.id, 'dismissed')}>
+                    <Text style={styles.actionBtnText}>Dismiss</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+              <View style={[styles.userCard, { marginTop: SPACING.md }]}>
+                <Text style={styles.credentialsTitle}>Thread (Reporter & Admin only)</Text>
+                <ScrollView style={{ maxHeight: 300 }} nestedScrollEnabled>
+                  {(reportMessages || []).map((m) => (
+                    <View key={m.id} style={{ paddingVertical: SPACING.xs }}>
+                      <Text style={styles.userDetailText}>{m.sender_id === userProfile.id ? 'Admin' : 'Reporter'}: {m.content}</Text>
+                    </View>
+                  ))}
+                </ScrollView>
+                <View style={{ flexDirection: 'row', gap: SPACING.sm, marginTop: SPACING.sm }}>
+                  <TextInput style={[styles.input, { flex: 1 }]} value={reportMsgText} onChangeText={setReportMsgText} placeholder="Reply..." placeholderTextColor={COLORS.onSurfaceVariant} />
+                  <TouchableOpacity style={[styles.actionBtn, { flex: 0, paddingHorizontal: SPACING.md, backgroundColor: COLORS.primary }]} onPress={sendReportMsg}>
+                    <Text style={styles.actionBtnText}>Send</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          ) : (
+            <View style={styles.userList}>
+              {(reports || []).map((r) => (
+                <TouchableOpacity key={r.id} style={[styles.userCard, SHADOWS.diffusion]} onPress={() => openReport(r)}>
+                  <View style={styles.userCardHeader}>
+                    <View style={styles.userInfo}>
+                      <Text style={styles.userName}>{r.reason}</Text>
+                      <Text style={styles.userEmail}>Status: {r.status} • {new Date(r.created_at).toLocaleDateString()}</Text>
+                    </View>
+                    <MaterialIcons name="chevron-right" size={24} color={COLORS.outline} />
+                  </View>
+                </TouchableOpacity>
+              ))}
+              {(reports || []).length === 0 && (
+                <View style={styles.emptyState}>
+                  <MaterialIcons name="report" size={64} color={COLORS.outlineVariant} />
+                  <Text style={styles.emptyTitle}>No reports</Text>
+                </View>
+              )}
+            </View>
+          )
+        ) : activeTab === 'announcements' ? (
+          <View style={styles.userList}>
+            <View style={[styles.userCard]}>
+              <Text style={styles.credentialsTitle}>Create Announcement</Text>
+              <TextInput style={styles.input} placeholder="Title" placeholderTextColor={COLORS.onSurfaceVariant} value={announcementForm.title} onChangeText={(t) => setAnnouncementForm({ ...announcementForm, title: t })} />
+              <TextInput style={[styles.input, { height: 80, textAlignVertical: 'top' }]} placeholder="Body" placeholderTextColor={COLORS.onSurfaceVariant} multiline value={announcementForm.body} onChangeText={(t) => setAnnouncementForm({ ...announcementForm, body: t })} />
+              <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
+                {['all','students','drivers'].map((a) => (
+                  <TouchableOpacity key={a} style={[styles.roleBadge, announcementForm.audience === a && styles.checkboxChecked]} onPress={() => setAnnouncementForm({ ...announcementForm, audience: a })}>
+                    <Text style={[styles.roleBadgeText, announcementForm.audience === a && { color: '#fff' }]}>{a}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <TouchableOpacity style={[styles.actionBtn, { backgroundColor: COLORS.primary, marginTop: SPACING.sm }]} onPress={handleCreateAnnouncement}>
+                <Text style={styles.actionBtnText}>Create</Text>
+              </TouchableOpacity>
+            </View>
+            {(announcements || []).map((a) => (
+              <View key={a.id} style={[styles.userCard]}>
+                <Text style={styles.userName}>{a.title}</Text>
+                <Text style={styles.userEmail}>{a.audience} • {new Date(a.created_at).toLocaleDateString()}</Text>
+                <Text style={[styles.userDetailText, { marginTop: SPACING.sm }]}>{a.body}</Text>
+              </View>
+            ))}
+          </View>
+        ) : activeTab === 'moderations' ? (
+          <View style={styles.userList}>
+            <View style={[styles.userCard]}>
+              <Text style={styles.credentialsTitle}>Quick Moderate User</Text>
+              <Text style={styles.userDetailText}>Select a user from All Users tab to moderate, or use actions below conceptually. Use Warn/Suspend/Ban/Lift on specific users.</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm, marginTop: SPACING.sm }}>
+                <TouchableOpacity style={[styles.actionBtn, { backgroundColor: COLORS.tertiary, flex: 0, paddingHorizontal: SPACING.md }]} onPress={() => showToast('Go to All Users and use moderation actions', 'success')}>
+                  <Text style={styles.actionBtnText}>Guide</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        ) : filteredUsers.length === 0 ? (
           <View style={styles.emptyState}>
             <MaterialIcons
               name={activeTab === 'pending' ? 'check-circle-outline' : 'people-outline'}
@@ -1249,4 +1476,17 @@ const styles = StyleSheet.create({
     color: COLORS.onSurfaceVariant,
     fontWeight: '600',
   },
+  input: {
+    backgroundColor: COLORS.surfaceContainerLow,
+    borderRadius: ROUNDED.md,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+    ...TYPOGRAPHY.body,
+    color: COLORS.onSurface,
+    borderWidth: 1,
+    borderColor: COLORS.outlineVariant,
+  },
+  backLink: { flexDirection: 'row', alignItems: 'center', gap: SPACING.xs },
+  backLinkText: { ...TYPOGRAPHY.body, color: COLORS.primary, fontWeight: '600' },
+  reportDetail: { gap: SPACING.md },
 });

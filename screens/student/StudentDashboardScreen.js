@@ -13,6 +13,8 @@ import { sendLocalNotification } from '../../data/pushNotifications';
 import UserAvatar from '../../components/UserAvatar';
 import CancelRideModal from '../../components/CancelRideModal';
 import { haversineDistance, formatDistanceText, formatDurationText } from '../../config/mapConfig';
+import { getUnreadNotificationCount } from '../../data/notifications';
+import { supabase } from '../../config/supabase';
 
 // Nav tab definitions for the student dashboard
 const NAV_TABS = [
@@ -32,6 +34,7 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
   const [activeTab, setActiveTab] = useState('Home');
   const [availability, setAvailability] = useState({ total: 0, online: 0, onTrip: 0, available: 0 });
   const [recentTrips, setRecentTrips] = useState([]);
+  const [unreadNotifCount, setUnreadNotifCount] = useState(0);
   const activeDriverRef = useRef(null);
   const profileFetchFailed = useRef(false);
   const prevStatusRef = useRef(null);
@@ -119,6 +122,31 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
     }
     if (userProfile?.id) loadTrips();
     return () => { mounted = false; };
+  }, [userProfile?.id]);
+
+  useEffect(() => {
+    if (!userProfile?.id) {
+      setUnreadNotifCount(0);
+      return;
+    }
+    let mounted = true;
+    const loadCount = async () => {
+      const count = await getUnreadNotificationCount(userProfile.id);
+      if (mounted) setUnreadNotifCount(count);
+    };
+    loadCount();
+    const interval = setInterval(loadCount, 10000);
+    const channel = supabase
+      .channel(`notif-student-${userProfile.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications', filter: `user_id=eq.${userProfile.id}` }, () => {
+        loadCount();
+      })
+      .subscribe();
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+      try { supabase.removeChannel(channel); } catch (e) {}
+    };
   }, [userProfile?.id]);
 
   // Per-tab animated scale for press bounce
@@ -247,13 +275,23 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
     <View style={styles.container}>
       <View style={styles.header}>
         <TriRideTextLogo size="small" />
-        <TouchableOpacity style={styles.avatarBtn} onPress={() => onNavigate('Profile')} activeOpacity={0.8}>
-          <UserAvatar
-            uri={userProfile?.avatar_url}
-            name={userProfile?.full_name || 'Student'}
-            size={40}
-          />
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <TouchableOpacity style={styles.headerIconBtn} onPress={() => onNavigate('Notifications')} activeOpacity={0.8}>
+            <MaterialIcons name="notifications" size={22} color={COLORS.onSurface} />
+            {unreadNotifCount > 0 && (
+              <View style={styles.notifBadge}>
+                <Text style={styles.notifBadgeText}>{unreadNotifCount > 9 ? '9+' : unreadNotifCount}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.avatarBtn} onPress={() => onNavigate('Profile')} activeOpacity={0.9}>
+            <UserAvatar
+              uri={userProfile?.avatar_url}
+              name={userProfile?.full_name || 'Student'}
+              size={40}
+            />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -341,14 +379,14 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
             onPress={() => onViewTrip(activeTripId)}
           >
             <View style={styles.activeRideLeft}>
-              <MaterialIcons name="star" size={20} color={ACCENT.amber} />
+              <MaterialIcons name="check-circle" size={20} color={ACCENT.green} />
               <View style={styles.activeRideTextWrap}>
-                <Text style={[styles.activeRideTitle, { color: ACCENT.orangeDeep }]}>Ride completed!</Text>
-                <Text style={styles.activeRideSubtitle}>Tap to rate your driver</Text>
+                <Text style={[styles.activeRideTitle, { color: ACCENT.greenInk }]}>Ride completed!</Text>
+                <Text style={styles.activeRideSubtitle}>Tap to view trip details</Text>
               </View>
             </View>
             <View style={styles.viewDetailsBtn}>
-              <Text style={styles.viewDetailsText}>Rate Driver</Text>
+              <Text style={styles.viewDetailsText}>View Details</Text>
               <MaterialIcons name="chevron-right" size={18} color={COLORS.primary} />
             </View>
           </TouchableOpacity>
@@ -358,25 +396,27 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
           {...GRADIENTS.wash}
           style={[styles.searchCard, ELEVATION.md]}
         >
-          <TouchableOpacity style={styles.searchBar} activeOpacity={0.8} onPress={onBookRide}>
-            <MaterialIcons name="search" size={20} color={COLORS.primary} />
+          <TouchableOpacity style={styles.searchBar} activeOpacity={0.85} onPress={onBookRide}>
+            <MaterialIcons name="search" size={22} color={COLORS.primary} />
             <Text style={styles.searchText}>Where to?</Text>
+            <MaterialIcons name="chevron-right" size={20} color={COLORS.onSurfaceVariant} style={{ marginLeft: 'auto' }} />
           </TouchableOpacity>
 
           <View style={styles.quickLocations}>
-            <TouchableOpacity style={styles.quickLocationBtn} onPress={onBookRide}>
-              <View style={[styles.locationIconBg, { backgroundColor: COLORS.primaryFixed }]}>
+            <TouchableOpacity style={styles.quickLocationBtn} activeOpacity={0.8} onPress={onBookRide}>
+              <View style={[styles.locationIconBg, { backgroundColor: COLORS.primaryContainer }]}>
                 <MaterialIcons name="home" size={18} color={COLORS.primary} />
               </View>
               <View style={styles.quickLocationText}>
                 <Text style={styles.quickLocationTitle}>Home</Text>
                 <Text style={styles.quickLocationSubtitle}>University Residence Hall B</Text>
               </View>
+              <MaterialIcons name="chevron-right" size={18} color={COLORS.outlineVariant} />
             </TouchableOpacity>
 
             <View style={styles.quickDivider} />
 
-            <TouchableOpacity style={styles.quickLocationBtn} onPress={onBookRide}>
+            <TouchableOpacity style={styles.quickLocationBtn} activeOpacity={0.8} onPress={onBookRide}>
               <View style={[styles.locationIconBg, { backgroundColor: COLORS.secondaryContainer }]}>
                 <MaterialIcons name="school" size={18} color={COLORS.secondary} />
               </View>
@@ -384,6 +424,7 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
                 <Text style={styles.quickLocationTitle}>Campus Library</Text>
                 <Text style={styles.quickLocationSubtitle}>Main Academic Quad</Text>
               </View>
+              <MaterialIcons name="chevron-right" size={18} color={COLORS.outlineVariant} />
             </TouchableOpacity>
           </View>
         </LinearGradient>
@@ -426,17 +467,23 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
 
           <View style={styles.tripsContainer}>
             {recentTrips.map((trip) => (
-              <TouchableOpacity key={trip.id} style={styles.tripItem} activeOpacity={0.7} onPress={onBookRide}>
+              <TouchableOpacity key={trip.id} style={styles.tripItem} activeOpacity={0.8} onPress={onBookRide}>
                 <View style={styles.tripIconBg}>
-                  <MaterialIcons name="directions-car" size={22} color={COLORS.outline} />
+                  <MaterialIcons name="directions-car" size={22} color={COLORS.primary} />
                 </View>
                 <View style={styles.tripDetails}>
-                  <Text style={styles.tripDest}>{trip.destination}</Text>
+                  <Text style={styles.tripDest} numberOfLines={1}>{trip.destination}</Text>
                   <Text style={styles.tripDate}>{trip.date}</Text>
                 </View>
-                <MaterialIcons name="chevron-right" size={24} color={COLORS.outlineVariant} />
+                <MaterialIcons name="chevron-right" size={22} color={COLORS.outlineVariant} />
               </TouchableOpacity>
             ))}
+            {recentTrips.length === 0 && (
+              <View style={styles.emptyTripsCard}>
+                <MaterialIcons name="history" size={24} color={COLORS.onSurfaceVariant} />
+                <Text style={styles.emptyTripsText}>No recent trips yet</Text>
+              </View>
+            )}
           </View>
         </View>
 
@@ -572,14 +619,12 @@ const styles = StyleSheet.create({
   },
   header: {
     flexDirection: 'row',
-    height: 60,
+    height: 64,
     paddingTop: 8,
-    // Was a hard 1px COLORS.outlineVariant rule under a flat fill. A soft
-    // hairline plus ELEVATION.sm lets the header float over the content.
     backgroundColor: CANVAS.raised,
     ...ELEVATION.sm,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(15, 23, 42, 0.05)',
+    borderBottomColor: 'rgba(15, 23, 42, 0.06)',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: SPACING.marginMobile,
@@ -589,9 +634,32 @@ const styles = StyleSheet.create({
     right: 0,
     zIndex: 10,
   },
-  // logoBadge / brandContainer / brandText / brandTextAccent / avatarDefault /
-  // avatarInitials / avatar were removed: the header renders TriRideTextLogo
-  // and UserAvatar, so these had 0 references.
+  headerIconBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: COLORS.surfaceContainerLow,
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
+  },
+  notifBadge: {
+    position: 'absolute',
+    top: 2,
+    right: 2,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: COLORS.error,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
+  notifBadgeText: {
+    color: '#fff',
+    fontSize: 9,
+    fontWeight: '800',
+  },
   avatarBtn: {
     width: 40,
     height: 40,
@@ -599,22 +667,24 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   scrollContent: {
-    paddingTop: 76,
+    paddingTop: 80,
     paddingHorizontal: SPACING.marginMobile,
-    paddingBottom: 95,
+    paddingBottom: 110,
   },
   welcomeSection: {
-    marginTop: SPACING.md,
+    marginTop: SPACING.sm,
     marginBottom: SPACING.lg,
   },
   welcomeName: {
     ...TYPOGRAPHY.headlineLgMobile,
     color: COLORS.onSurface,
-    fontWeight: '700',
+    fontWeight: '800',
+    letterSpacing: -0.5,
   },
   welcomeSubtitle: {
     ...TYPOGRAPHY.body,
     color: COLORS.onSurfaceVariant,
+    marginTop: 2,
   },
   // The fill itself is a GRADIENTS.wash LinearGradient now, so the style
   // only carries shape and depth. The old pair of 1px outlineVariant
@@ -626,12 +696,10 @@ const styles = StyleSheet.create({
   },
   searchBar: {
     flexDirection: 'row',
-    // A raised white pill sitting on the tinted card reads as an input
-    // without needing a hard outline around it.
     backgroundColor: CANVAS.raised,
-    ...ELEVATION.xs,
-    height: 48,
-    borderRadius: 12,
+    ...ELEVATION.sm,
+    height: 52,
+    borderRadius: 14,
     ...BORDERS.hair,
     alignItems: 'center',
     paddingHorizontal: SPACING.md,
@@ -640,10 +708,11 @@ const styles = StyleSheet.create({
   searchText: {
     ...TYPOGRAPHY.body,
     color: INK.subtle,
+    fontWeight: '500',
   },
   quickLocations: {
     marginTop: SPACING.md,
-    gap: SPACING.sm,
+    gap: SPACING.xs,
   },
   quickLocationBtn: {
     flexDirection: 'row',
@@ -652,9 +721,9 @@ const styles = StyleSheet.create({
     gap: SPACING.md,
   },
   locationIconBg: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -669,11 +738,12 @@ const styles = StyleSheet.create({
   quickLocationSubtitle: {
     ...TYPOGRAPHY.caption,
     color: COLORS.onSurfaceVariant,
+    marginTop: 1,
   },
   quickDivider: {
     height: StyleSheet.hairlineWidth,
     backgroundColor: 'rgba(15, 23, 42, 0.08)',
-    marginLeft: 48,
+    marginLeft: 52,
   },
   section: {
     marginTop: SPACING.lg,
@@ -681,18 +751,20 @@ const styles = StyleSheet.create({
   sectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-end',
+    alignItems: 'center',
     marginBottom: SPACING.md,
   },
   sectionTitle: {
     ...TYPOGRAPHY.sectionTitle,
     color: COLORS.onSurface,
-    fontWeight: '700',
+    fontWeight: '800',
+    letterSpacing: -0.3,
   },
   seeAllText: {
     ...TYPOGRAPHY.button,
     fontSize: 14,
     color: ACCENT.blueDeep,
+    fontWeight: '600',
   },
   tripsContainer: {
     gap: SPACING.sm,
@@ -710,9 +782,23 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 12,
-    backgroundColor: CANVAS.sunken,
+    backgroundColor: COLORS.primaryContainer,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  emptyTripsCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: SPACING.sm,
+    padding: SPACING.lg,
+    backgroundColor: CANVAS.raised,
+    borderRadius: 16,
+    ...BORDERS.hair,
+  },
+  emptyTripsText: {
+    ...TYPOGRAPHY.body,
+    color: COLORS.onSurfaceVariant,
   },
   tripDetails: {
     flex: 1,
@@ -738,6 +824,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     padding: SPACING.md,
     justifyContent: 'space-between',
+    ...ELEVATION.sm,
   },
   safetyCardTitle: {
     ...TYPOGRAPHY.body,

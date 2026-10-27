@@ -15,7 +15,7 @@
     "android": {
       "package": "com.triride.app",
       "versionCode": 2,
-      "googleServicesFile": "GOOGLE_SERVICES_JSON",
+      "googleServicesFile": "./google-services.json",
       "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "backgroundColor": "#0A3D91",

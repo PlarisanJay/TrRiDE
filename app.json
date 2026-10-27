@@ -4,7 +4,6 @@
     "slug": "triride_app",
     "version": "1.0.1",
     "orientation": "portrait",
-    "newArchEnabled": false,
     "icon": "./assets/splash-icon.png",
     "userInterfaceStyle": "light",
     "ios": {
@@ -68,4 +67,3 @@
     }
   }
 }
-

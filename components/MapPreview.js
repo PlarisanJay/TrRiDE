@@ -31,6 +31,7 @@ const MapPreview = forwardRef(function MapPreview(
     onUserInteractionEnd,
     fitPadding = null,
     autoFit = true,
+    followRegion = true,
   },
   ref
 ) {
@@ -63,6 +64,7 @@ const MapPreview = forwardRef(function MapPreview(
       if (!coordinate) return null;
       return {
         id: isDriver ? 'driver' : isDest ? 'destination' : 'pickup',
+        markerId: m.id || null,
         lat: coordinate.latitude,
         lng: coordinate.longitude,
         type: isDriver ? 'driver' : isDest ? 'destination' : 'pickup',
@@ -74,6 +76,15 @@ const MapPreview = forwardRef(function MapPreview(
         badgeColor: m.badgeColor || null,
         label: m.label || (isDriver ? (m.statusText || 'Driver') : isDest ? 'Drop-off' : 'Pick-up'),
         statusText: m.statusText || (isDriver ? 'ON THE WAY' : isDest ? 'Drop-off' : 'Pick-up'),
+        // Compact, seat-coloured markers are opt-in so other maps keep their
+        // existing marker design.
+        compact: Boolean(m.compact),
+        seatNumber: m.seatNumber || null,
+        passengerName: m.passengerName || null,
+        leg: m.leg || (isDest ? 'destination' : 'pickup'),
+        selected: Boolean(m.selected),
+        suggested: Boolean(m.suggested),
+        zIndex: Number(m.zIndex) || 0,
       };
     }).filter(Boolean);
   }, [markers]);
@@ -170,14 +181,23 @@ const MapPreview = forwardRef(function MapPreview(
       markers: leafletMarkers,
       autoFit,
     });
-    if (region?.latitude && region?.longitude) {
+    if (followRegion && region?.latitude && region?.longitude) {
       sendUpdate({
         type: 'region',
         lat: region.latitude,
         lng: region.longitude,
       });
     }
-  }, [routeCoordinates, durationText, leafletMarkers, region?.latitude, region?.longitude, sendUpdate, autoFit]);
+  }, [
+    routeCoordinates,
+    durationText,
+    leafletMarkers,
+    region?.latitude,
+    region?.longitude,
+    sendUpdate,
+    autoFit,
+    followRegion,
+  ]);
 
   // Sync route and markers when they change without reloading the page
   useEffect(() => {
@@ -192,8 +212,10 @@ const MapPreview = forwardRef(function MapPreview(
     }
   }, [routeCoordinates, durationText, leafletMarkers, sendUpdate, autoFit]);
 
-  // Sync region changes
+  // Sync region changes. Multi-passenger maps disable this so selecting a
+  // passenger changes the route without recentering away from the other pins.
   useEffect(() => {
+    if (!followRegion) return;
     if (isLoadedRef.current && region?.latitude && region?.longitude) {
       sendUpdate({
         type: 'region',
@@ -201,7 +223,7 @@ const MapPreview = forwardRef(function MapPreview(
         lng: region.longitude,
       });
     }
-  }, [region?.latitude, region?.longitude, sendUpdate]);
+  }, [followRegion, region?.latitude, region?.longitude, sendUpdate]);
 
   const onMessage = (event) => {
     try {

@@ -41,7 +41,7 @@ import {
   startTrip,
   subscribeToDriverTrips,
 } from '../../data/trips';
-import { getDriverMultiPassengerTrips } from '../../data/multiPassenger';
+import { getDriverMultiPassengerTrips, setNextPickup } from '../../data/multiPassenger';
 import { sendLocalNotification } from '../../data/pushNotifications';
 import {
   QUEUE_STATUS,
@@ -51,10 +51,11 @@ import {
   getDropoffDistanceMeters,
   getDropoffOrder,
   getOnBoardTrips,
-  getPickupQueue,
+  getPickupDistanceMeters,
   getProgressForStatus,
   getQueueStatus,
   getSeatColor,
+  getSelectedPickupTrip,
   isActiveTrip,
   sortByAcceptance,
 } from '../../data/rideQueue';
@@ -198,23 +199,86 @@ function MultiPassengerRideScreenInner({
 
   const seatNumbers = useMemo(() => assignSeatNumbers(trips), [trips]);
   const activeTrips = useMemo(() => trips.filter(isActiveTrip), [trips]);
-  const pickupQueue = useMemo(() => getPickupQueue(trips), [trips]);
+  const acceptedPickups = useMemo(
+    () => trips.filter((trip) => trip.status === 'accepted'),
+    [trips]
+  );
+  const selectedPickupTrip = useMemo(
+    () => getSelectedPickupTrip(acceptedPickups),
+    [acceptedPickups]
+  );
   const dropoffOrder = useMemo(
     () => getDropoffOrder(getOnBoardTrips(trips), driverCoords),
     [trips, driverCoords]
   );
   const nearestDropoffId = dropoffOrder[0]?.id || null;
-  const focusTrip = pickupQueue[0] || dropoffOrder[0] || null;
-  const focusPoint = focusTrip
-    ? focusTrip.status === 'accepted'
-      ? { latitude: focusTrip.pickup_lat, longitude: focusTrip.pickup_lng }
-      : { latitude: focusTrip.dest_lat, longitude: focusTrip.dest_lng }
-    : null;
+
+  // The nearest passenger is only a suggestion. Nothing is selected or locked
+  // until the driver taps a passenger card.
+  const pickupSuggestion = useMemo(() => {
+    if (!driverCoords || selectedPickupTrip || acceptedPickups.length < 2) {
+      return null;
+    }
+
+    return acceptedPickups.reduce((best, trip) => {
+      const distance = getPickupDistanceMeters(trip, driverCoords);
+      if (distance == null) return best;
+      if (!best || distance < best.distance) {
+        return { tripId: trip.id, distance };
+      }
+      return best;
+    }, null);
+  }, [acceptedPickups, driverCoords, selectedPickupTrip]);
+
+  const suggestedTripId = pickupSuggestion?.tripId || null;
+  const focusTrip =
+    selectedPickupTrip ||
+    (acceptedPickups.length === 0 ? dropoffOrder[0] : null) ||
+    null;
   const totalSeats = useMemo(() => countActiveSeats(trips), [trips]);
 
-  useEffect(() => {
-    focusRef.current = focusTrip;
-  }, [focusTrip]);
+  // The multi-passenger map must cover every active pin. The route still
+  // follows the driver's explicit selection, but the viewport does not.
+  const mapRegion = useMemo(() => {
+    const coordinates = [];
+    trips.forEach((trip) => {
+      if (!isActiveTrip(trip)) return;
+      if (trip.pickup_lat != null && trip.pickup_lng != null) {
+        coordinates.push([trip.pickup_lat, trip.pickup_lng]);
+      }
+      if (trip.dest_lat != null && trip.dest_lng != null) {
+        coordinates.push([trip.dest_lat, trip.dest_lng]);
+      }
+    });
+    if (driverCoords) {
+      coordinates.push([driverCoords.latitude, driverCoords.longitude]);
+    }
+
+    if (coordinates.length === 0) {
+      return {
+        latitude: TOLEDO_CITY.latitude,
+        longitude: TOLEDO_CITY.longitude,
+        latitudeDelta: 0.03,
+        longitudeDelta: 0.03,
+      };
+    }
+
+    const lats = coordinates.map(([lat]) => lat);
+    const lngs = coordinates.map(([, lng]) => lng);
+    const minLat = Math.min(...lats);
+    const maxLat = Math.max(...lats);
+    const minLng = Math.min(...lngs);
+    const maxLng = Math.max(...lngs);
+    const latSpan = Math.max(maxLat - minLat, 0.01);
+    const lngSpan = Math.max(maxLng - minLng, 0.01);
+
+    return {
+      latitude: (minLat + maxLat) / 2,
+      longitude: (minLng + maxLng) / 2,
+      latitudeDelta: Math.max(latSpan * 1.8, 0.03),
+      longitudeDelta: Math.max(lngSpan * 1.8, 0.03),
+    };
+  }, [trips, driverCoords]);
 
   // Notify the driver in-app and locally when a passenger cancels.
   // The push notification is already sent by cancelTripWithReason.
@@ -271,6 +335,25 @@ function MultiPassengerRideScreenInner({
     });
   }, []);
 
+  // When the driver selects or completes a pick-up, immediately refresh the
+  // status sent to every passenger. Otherwise a stationary driver would leave
+  // the selected passenger showing the old STANDBY label until the next GPS
+  // tick. The guard prevents duplicate sends on ordinary GPS movement.
+  useEffect(() => {
+    const previous = focusRef.current;
+    const changed =
+      previous?.id !== focusTrip?.id || previous?.status !== focusTrip?.status;
+    focusRef.current = focusTrip;
+    if (changed && driverCoords) {
+      broadcastLocation(driverCoords.latitude, driverCoords.longitude);
+    }
+  }, [
+    focusTrip?.id,
+    focusTrip?.status,
+    driverCoords,
+    broadcastLocation,
+  ]);
+
   const activeTripIdsKey = useMemo(
     () => activeTrips.map((trip) => trip.id).sort().join('|'),
     [activeTrips]
@@ -311,6 +394,13 @@ function MultiPassengerRideScreenInner({
     let locationSubscription = null;
     let mounted = true;
 
+    // Do not move the map or calculate a route from a very poor GPS fix.
+    // A missing accuracy value is treated as usable for platform compatibility.
+    const isUsableFix = (location) => {
+      const accuracy = location?.coords?.accuracy;
+      return Boolean(location?.coords) && (accuracy == null || accuracy <= 60);
+    };
+
     const startWatching = async () => {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync().catch(
@@ -322,7 +412,7 @@ function MultiPassengerRideScreenInner({
           accuracy: Location.Accuracy.High,
         }).catch(() => null);
 
-        if (initial?.coords && mounted) {
+        if (isUsableFix(initial) && mounted) {
           const coords = {
             latitude: initial.coords.latitude,
             longitude: initial.coords.longitude,
@@ -338,7 +428,7 @@ function MultiPassengerRideScreenInner({
             timeInterval: 4000,
           },
           (newLocation) => {
-            if (!newLocation?.coords || !mounted) return;
+            if (!isUsableFix(newLocation) || !mounted) return;
             const coords = {
               latitude: newLocation.coords.latitude,
               longitude: newLocation.coords.longitude,
@@ -360,21 +450,9 @@ function MultiPassengerRideScreenInner({
     };
   }, [broadcastLocation]);
 
-  // Fallback position when GPS is unavailable, matching CurrentTripScreen.
-  useEffect(() => {
-    if (driverCoords) return;
-    const fallback = tripsRef.current.find(
-      (trip) => isActiveTrip(trip) && trip.pickup_lat != null
-    );
-    if (fallback) {
-      setDriverCoords({
-        latitude: fallback.pickup_lat + 0.003,
-        longitude: fallback.pickup_lng - 0.002,
-      });
-    }
-  }, [trips, driverCoords]);
-
   // Route line for the current focus: next pick-up, or nearest drop-off.
+  // The route is only drawn from a real live GPS fix; no fallback coordinate
+  // is substituted, so the driver never sees a fabricated position or route.
   useEffect(() => {
     if (!focusTrip) {
       setRouteCoordinates([]);
@@ -393,15 +471,37 @@ function MultiPassengerRideScreenInner({
         ? { latitude: focusTrip.dest_lat, longitude: focusTrip.dest_lng }
         : null;
 
-    const from =
-      driverCoords ||
-      (focusTrip.pickup_lat != null
-        ? { latitude: focusTrip.pickup_lat, longitude: focusTrip.pickup_lng }
-        : null);
+    if (!to) {
+      setRouteCoordinates([]);
+      setRouteDistText('');
+      setRouteDurText('');
+      routeAnchorRef.current = null;
+      return undefined;
+    }
 
-    if (!from || !to) return undefined;
+    // Do not route from the passenger's own pin. Wait for the driver's actual
+    // GPS fix so the line and ETA match the real vehicle position.
+    if (!driverCoords) {
+      setRouteCoordinates([]);
+      setRouteDistText('');
+      setRouteDurText('');
+      routeAnchorRef.current = null;
+      return undefined;
+    }
 
+    const from = driverCoords;
     const anchor = routeAnchorRef.current;
+    const isNewFocus =
+      anchor?.focusId !== focusTrip.id || anchor?.isPickupLeg !== isPickupLeg;
+
+    // Clear the previous passenger's line immediately when the selection
+    // changes instead of showing a stale route until the new request finishes.
+    if (isNewFocus) {
+      setRouteCoordinates([]);
+      setRouteDistText('');
+      setRouteDurText('');
+    }
+
     const movedMeters = anchor
       ? haversineDistance(anchor.lat, anchor.lng, from.latitude, from.longitude) * 1000
       : Infinity;
@@ -410,7 +510,7 @@ function MultiPassengerRideScreenInner({
       anchor &&
       anchor.focusId === focusTrip.id &&
       anchor.isPickupLeg === isPickupLeg &&
-      movedMeters < 120
+      movedMeters < 30
     ) {
       return undefined;
     }
@@ -423,15 +523,19 @@ function MultiPassengerRideScreenInner({
     };
 
     let mounted = true;
-    fetchRoute(from, to)
+    const controller =
+      typeof AbortController !== 'undefined' ? new AbortController() : null;
+
+    fetchRoute(from, to, controller ? { signal: controller.signal } : {})
       .then((result) => {
-        if (!mounted || !result) return;
+        if (!mounted || controller?.signal.aborted || !result) return;
         setRouteCoordinates(result.coordinates || []);
         setRouteDistText(result.distanceText || '');
         setRouteDurText(result.durationText || '');
       })
       .catch(() => {
-        if (!mounted) return;
+        if (!mounted || controller?.signal.aborted) return;
+        setRouteCoordinates([]);
         const distanceKm = haversineDistance(
           from.latitude,
           from.longitude,
@@ -444,10 +548,15 @@ function MultiPassengerRideScreenInner({
 
     return () => {
       mounted = false;
+      controller?.abort();
     };
   }, [
     focusTrip?.id,
     focusTrip?.status,
+    focusTrip?.pickup_lat,
+    focusTrip?.pickup_lng,
+    focusTrip?.dest_lat,
+    focusTrip?.dest_lng,
     driverCoords?.latitude,
     driverCoords?.longitude,
   ]);
@@ -460,6 +569,10 @@ function MultiPassengerRideScreenInner({
 
       const seat = seatNumbers.get(trip.id) || 1;
       const color = getSeatColor(seat);
+      const student = students[trip.student_id];
+      const passengerName = student?.full_name || `Passenger ${seat}`;
+      const isSelectedPickup = selectedPickupTrip?.id === trip.id;
+      const isSuggestedPickup = suggestedTripId === trip.id;
 
       if (trip.pickup_lat != null && trip.pickup_lng != null) {
         list.push({
@@ -471,9 +584,24 @@ function MultiPassengerRideScreenInner({
           type: 'pickup',
           color,
           customColor: color,
-          badgeColor: color,
-          badgeText: `P${seat} PICK`,
-          label: `P${seat} Pick-up`,
+          badgeColor: isSuggestedPickup ? '#d97706' : color,
+          badgeText: isSelectedPickup
+            ? `P${seat} NEXT`
+            : isSuggestedPickup
+              ? `P${seat} NEAREST`
+              : `P${seat}`,
+          label: isSelectedPickup
+            ? `P${seat} Pick-up (next)`
+            : isSuggestedPickup
+              ? `P${seat} Pick-up (nearest)`
+              : `P${seat} Pick-up`,
+          compact: true,
+          seatNumber: seat,
+          passengerName,
+          leg: 'pickup',
+          selected: isSelectedPickup,
+          suggested: isSuggestedPickup,
+          zIndex: isSelectedPickup ? 2000 : isSuggestedPickup ? 1500 : 1000,
         });
       }
 
@@ -488,8 +616,15 @@ function MultiPassengerRideScreenInner({
           color,
           customColor: color,
           badgeColor: color,
-          badgeText: `P${seat} DROP`,
+          badgeText: `P${seat}`,
           label: `P${seat} Drop-off`,
+          compact: true,
+          seatNumber: seat,
+          passengerName,
+          leg: 'destination',
+          selected: false,
+          suggested: false,
+          zIndex: 1000,
         });
       }
     });
@@ -500,13 +635,26 @@ function MultiPassengerRideScreenInner({
         coordinate: driverCoords,
         type: 'driver',
         label: 'You (Driver)',
-        statusText: focusTrip?.status === 'in_progress' ? 'DRIVING' : 'EN ROUTE',
+        statusText: focusTrip
+          ? focusTrip.status === 'in_progress'
+            ? 'DRIVING'
+            : 'EN ROUTE'
+          : 'STANDBY',
         color: '#16a34a',
+        zIndex: 500,
       });
     }
 
     return list;
-  }, [trips, driverCoords, seatNumbers, focusTrip?.status]);
+  }, [
+    trips,
+    driverCoords,
+    seatNumbers,
+    students,
+    focusTrip?.status,
+    selectedPickupTrip?.id,
+    suggestedTripId,
+  ]);
 
   useEffect(() => {
     if (!markers.length) return undefined;
@@ -526,15 +674,34 @@ function MultiPassengerRideScreenInner({
     }
   }, [driverCoords, focusTrip?.pickup_lat, focusTrip?.pickup_lng]);
 
+  const handleSelectPickup = async (trip) => {
+    if (actingId || !trip?.id) return;
+
+    setActingId(trip.id);
+    try {
+      await setNextPickup(trip.id);
+      await loadTrips({ silent: true });
+    } catch (error) {
+      alertDialog({
+        title: 'Cannot Select Pick-up',
+        message:
+          error?.message ||
+          'Could not select this passenger as the next pick-up.',
+      });
+    } finally {
+      setActingId(null);
+    }
+  };
+
   const handlePickup = async (trip) => {
     if (actingId) return;
 
-    const current = getPickupQueue(tripsRef.current)[0];
+    const current = getSelectedPickupTrip(tripsRef.current);
     if (!current || current.id !== trip.id) {
       alertDialog({
-        title: 'Pick-up Order',
+        title: 'Choose Next Pick-up',
         message:
-          'The app decides pick-up order by acceptance time. Finish the current pick-up first.',
+          "Tap this passenger's card to select it as the next pick-up first, then tap Picked Up Passenger.",
       });
       return;
     }
@@ -674,6 +841,16 @@ function MultiPassengerRideScreenInner({
     return map;
   }, [dropoffOrder, driverCoords]);
 
+  const pickupDistances = useMemo(() => {
+    const map = {};
+    trips.forEach((trip) => {
+      if (trip.status !== 'accepted') return;
+      const distance = getPickupDistanceMeters(trip, driverCoords);
+      if (distance != null) map[trip.id] = formatDistanceText(Math.round(distance));
+    });
+    return map;
+  }, [trips, driverCoords]);
+
   if (loading) {
     return (
       <View style={styles.centered}>
@@ -700,26 +877,49 @@ function MultiPassengerRideScreenInner({
   }
 
   const focusSeat = focusTrip ? seatNumbers.get(focusTrip.id) || 1 : null;
-  const focusLabel = focusTrip
-    ? focusTrip.status === 'accepted'
-      ? `Next: pick up Passenger ${focusSeat}`
-      : `Next: drop off Passenger ${focusSeat}`
-    : 'All active passengers served';
+  const selectedPickupSeat = selectedPickupTrip
+    ? seatNumbers.get(selectedPickupTrip.id) || 1
+    : null;
+  const suggestedSeat = suggestedTripId
+    ? seatNumbers.get(suggestedTripId) || 1
+    : null;
+  const needsPickupChoice = !selectedPickupTrip && acceptedPickups.length > 0;
+
+  let focusLabel = 'All active passengers served';
+  if (selectedPickupTrip) {
+    focusLabel = `Next: pick up Passenger ${selectedPickupSeat}`;
+  } else if (needsPickupChoice) {
+    focusLabel = 'Choose next pick-up';
+  } else if (focusTrip) {
+    focusLabel = `Next: drop off Passenger ${focusSeat}`;
+  }
+
+  let summarySub = 'No active passenger left in this queue.';
+  if (needsPickupChoice) {
+    summarySub =
+      suggestedSeat && pickupSuggestion
+        ? `Nearest suggestion: Passenger ${suggestedSeat} • ${formatDistanceText(
+            Math.round(pickupSuggestion.distance)
+          )} away — tap a card to select.`
+        : 'Tap a passenger card to choose the next pick-up.';
+  } else if (focusTrip) {
+    summarySub = !driverCoords
+      ? 'Waiting for GPS location to start navigation...'
+      : routeDistText
+        ? `📍 ${routeDistText}`
+        : 'Calculating route...';
+  }
 
   return (
     <View style={styles.container}>
       <View style={[styles.mapSection, isWideWeb && wideMapStyles.mapSection]}>
         <MapPreview
           ref={mapRef}
-          region={{
-            latitude: focusPoint?.latitude || TOLEDO_CITY.latitude,
-            longitude: focusPoint?.longitude || TOLEDO_CITY.longitude,
-            latitudeDelta: 0.03,
-            longitudeDelta: 0.03,
-          }}
+          region={mapRegion}
           markers={markers}
           routeCoordinates={routeCoordinates}
           durationText={routeDurText || '30 MIN'}
+          followRegion={false}
           scrollEnabled
         />
 
@@ -793,11 +993,7 @@ function MultiPassengerRideScreenInner({
           <View style={[styles.summaryCard, SHADOWS.diffusion]}>
             <View style={styles.summaryTextWrap}>
               <Text style={styles.summaryTitle}>{focusLabel}</Text>
-              <Text style={styles.summarySub}>
-                {routeDistText
-                  ? `📍 ${routeDistText}`
-                  : 'Calculating route...'}
-              </Text>
+              <Text style={styles.summarySub}>{summarySub}</Text>
             </View>
             <View style={styles.seatCountBadge}>
               <MaterialIcons name="people" size={15} color={COLORS.primary} />
@@ -807,17 +1003,55 @@ function MultiPassengerRideScreenInner({
             </View>
           </View>
 
+          {activeTrips.length > 0 ? (
+            <View style={styles.legendCard}>
+              <Text style={styles.legendTitle}>Passenger map colors</Text>
+              <View style={styles.legendRow}>
+                {activeTrips.map((trip) => {
+                  const seat = seatNumbers.get(trip.id) || 1;
+                  const name =
+                    students[trip.student_id]?.full_name || `Passenger ${seat}`;
+                  const isSelected = selectedPickupTrip?.id === trip.id;
+                  const isSuggested = suggestedTripId === trip.id;
+                  return (
+                    <View
+                      key={trip.id}
+                      style={[
+                        styles.legendChip,
+                        isSelected && styles.legendChipSelected,
+                        isSuggested && styles.legendChipSuggested,
+                      ]}
+                    >
+                      <View
+                        style={[
+                          styles.legendDot,
+                          { backgroundColor: getSeatColor(seat) },
+                        ]}
+                      />
+                      <Text style={styles.legendChipText} numberOfLines={1}>
+                        P{seat} {name}
+                        {isSelected ? ' • NEXT' : isSuggested ? ' • NEAREST' : ''}
+                      </Text>
+                    </View>
+                  );
+                })}
+              </View>
+            </View>
+          ) : null}
+
           <Text style={styles.sectionTitle}>Ride Queue</Text>
           <MultiPassengerQueue
             trips={trips}
             seatNumbers={seatNumbers}
-            pickupQueue={pickupQueue}
             nearestDropoffId={nearestDropoffId}
             students={students}
             dropoffDistances={dropoffDistances}
+            pickupDistances={pickupDistances}
+            suggestedTripId={suggestedTripId}
             actingId={actingId}
             cancellingId={cancelling ? cancelTarget?.id : null}
             onPickup={handlePickup}
+            onSelectPickup={handleSelectPickup}
             onDropoff={handleDropoff}
             onCancel={handleCancelPress}
             onCall={handleCall}
@@ -828,7 +1062,7 @@ function MultiPassengerRideScreenInner({
           <View style={[styles.progressCard, SHADOWS.diffusion]}>
             {trips.map((trip) => {
               const seat = seatNumbers.get(trip.id) || 1;
-              const status = getQueueStatus(trip, pickupQueue);
+              const status = getQueueStatus(trip);
               return (
                 <PassengerProgressBar
                   key={trip.id}
@@ -845,9 +1079,10 @@ function MultiPassengerRideScreenInner({
           </View>
 
           <Text style={styles.footerNote}>
-            Pick-up order follows acceptance time. Drop-off order follows the nearest
-            destination and updates as you drive. Live navigation stays active while the
-            queue changes.
+            You choose the next pick-up by tapping a passenger card. The nearest
+            passenger is only a suggestion until you select them. All active
+            passenger pins stay on the map, and drop-off order still follows the
+            nearest destination.
           </Text>
         </ScrollView>
       </View>
@@ -1050,6 +1285,60 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.onSurfaceVariant,
     marginTop: 2,
+  },
+  legendCard: {
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: COLORS.outlineVariant,
+    borderRadius: ROUNDED.md,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: 10,
+    gap: 8,
+  },
+  legendTitle: {
+    ...TYPOGRAPHY.caption,
+    fontSize: 11,
+    fontWeight: '800',
+    color: COLORS.onSurfaceVariant,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  legendRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  legendChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    maxWidth: '100%',
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 14,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: COLORS.outlineVariant,
+  },
+  legendChipSelected: {
+    borderColor: '#93c5fd',
+    backgroundColor: '#eff6ff',
+  },
+  legendChipSuggested: {
+    borderColor: '#fcd34d',
+    backgroundColor: '#fffbeb',
+  },
+  legendDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+  },
+  legendChipText: {
+    ...TYPOGRAPHY.caption,
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.onSurface,
+    flexShrink: 1,
   },
   seatCountBadge: {
     flexDirection: 'row',

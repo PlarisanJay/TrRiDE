@@ -91,7 +91,10 @@ export function normalizeGeoapifyFeature(feature) {
     formatted,
     title: props.name || props.address_line1 || formatted.split(',')[0] || 'Selected location',
     subtext: props.address_line2 || props.city || 'Toledo City, Cebu',
-    category: props.categories?.[0]?.split('.')[0] || null,
+    category:
+      props.categories?.[0]?.split('.')[0] ||
+      props.category?.split('.')[0] ||
+      null,
     coordinate,
   };
 }
@@ -204,6 +207,44 @@ export function buildLeafletHtml({ lat, lng, zoom, scrollEnabled, wheelZoom = fa
       max-width: 80px;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+
+    /* Compact seat-coloured markers for the multi-passenger map. */
+    .custom-marker-container.multi-marker {
+      width: 96px;
+      height: 70px;
+    }
+    .multi-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 24px;
+      height: 20px;
+      padding: 0 7px;
+      margin-bottom: 2px;
+      border-radius: 10px;
+      border: 1.5px solid #ffffff;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.22);
+      color: #ffffff;
+      font-size: 10px;
+      font-weight: 900;
+      line-height: 1;
+      letter-spacing: 0.2px;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .multi-label {
+      margin-bottom: 1px;
+      padding: 1px 4px;
+      border-radius: 4px;
+      background: rgba(255,255,255,0.94);
+      color: #1e293b;
+      font-size: 9px;
+      font-weight: 800;
+      line-height: 1.1;
+      letter-spacing: 0.2px;
+      text-transform: uppercase;
+      white-space: nowrap;
     }
 
     /* Pinpoint Needle Markers */
@@ -424,7 +465,25 @@ export function buildLeafletHtml({ lat, lng, zoom, scrollEnabled, wheelZoom = fa
         var isPickup = (m.id === 'pickup' || m.type === 'pickup');
         var html = '';
 
-        if (isDriver) {
+        if (m.compact && !isDriver) {
+          // Compact seat-coloured pins for the all-passenger map. The exact
+          // coordinate stays untouched; only the visual size is reduced.
+          var compactFill = m.customColor || (isPickup ? '#f97316' : '#2563eb');
+          var compactBadge = m.seatNumber ? ('P' + m.seatNumber) : (m.badgeText || 'P');
+          if (m.selected) compactBadge += ' NEXT';
+          else if (m.suggested) compactBadge += ' NEAREST';
+          var compactBadgeColor = m.suggested ? '#d97706' : (m.badgeColor || compactFill);
+          var compactLegLabel = (m.leg === 'destination' || !isPickup) ? 'Drop-off' : 'Pick-up';
+          html = '<div class="custom-marker-container multi-marker">' +
+            '<div class="multi-badge" style="background:' + compactBadgeColor + '">' + compactBadge + '</div>' +
+            '<div class="multi-label">' + compactLegLabel + '</div>' +
+            '<svg class="pinpoint-svg" width="26" height="34" viewBox="0 0 30 38" fill="none">' +
+              '<path d="M15 38C15 38 28 23.5 28 14C28 6.82 22.18 1 15 1C7.82 1 2 6.82 2 14C2 23.5 15 38 15 38Z" fill="' + compactFill + '" stroke="#ffffff" stroke-width="2"/>' +
+              '<circle cx="15" cy="14" r="5.5" fill="#ffffff"/>' +
+              '<circle cx="15" cy="14" r="3" fill="' + compactFill + '"/>' +
+            '</svg>' +
+          '</div>';
+        } else if (isDriver) {
           var statusTxt = (m.statusText || 'ON THE WAY').toUpperCase();
           var isStandby = statusTxt.indexOf('STANDBY') !== -1;
           var badgeClass = isStandby ? 'amber' : 'green';
@@ -480,8 +539,14 @@ export function buildLeafletHtml({ lat, lng, zoom, scrollEnabled, wheelZoom = fa
         // Anchor = [horizontal_center, distance_from_top_to_pin_tip]
         // Container is 170x68. Badge ~26px tall + 4px margin. Pin SVG follows.
         var anchorX = 85; // always center of 170px container
-        var anchorY, iconH;
-        if (isDriver) {
+        var anchorY, iconH, iconWidth = 170;
+        if (m.compact && !isDriver) {
+          // Compact badge ~20px + 2px gap + label ~12px + 1px gap + 34px pin.
+          iconWidth = 96;
+          iconH = 70;
+          anchorX = 48;
+          anchorY = 70; // pin tip is at very bottom
+        } else if (isDriver) {
           // callout badge ~26px + 4px gap + 42px pin SVG = 72px total
           iconH = 76;
           anchorY = 76; // pin tip is at very bottom
@@ -493,7 +558,7 @@ export function buildLeafletHtml({ lat, lng, zoom, scrollEnabled, wheelZoom = fa
         var icon = L.divIcon({
           className: '',
           html: html,
-          iconSize: [170, iconH],
+          iconSize: [iconWidth, iconH],
           iconAnchor: [anchorX, anchorY]
         });
 
@@ -504,7 +569,10 @@ export function buildLeafletHtml({ lat, lng, zoom, scrollEnabled, wheelZoom = fa
         if (!Number.isFinite(markerLat) || !Number.isFinite(markerLng)) return;
         if (Math.abs(markerLat) > 90 || Math.abs(markerLng) > 180) return;
 
-        L.marker([markerLat, markerLng], { icon: icon }).addTo(markersLayer);
+        L.marker([markerLat, markerLng], {
+          icon: icon,
+          zIndexOffset: Number.isFinite(Number(m.zIndex)) ? Number(m.zIndex) : 0
+        }).addTo(markersLayer);
       });
 
       if (shouldFit !== false) fitAll();

@@ -45,6 +45,7 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [activeField, setActiveField] = useState(null); // 'pickup' | 'destination' | null
+  const [pinHintField, setPinHintField] = useState(null); // 'pickup' | 'destination' | null
   const [sheetHeight, setSheetHeight] = useState(300);
   const [autoFollow, setAutoFollow] = useState(true);
   const [showRecenter, setShowRecenter] = useState(false);
@@ -297,21 +298,37 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
     const newCoords = toCoordinate(coords);
     if (!newCoords) return;
     if (activeField !== 'pickup' && activeField !== 'destination') return;
-    if (activeField === 'pickup') {
+
+    const field = activeField;
+    setPinHintField(null);
+
+    // Use the exact name/address resolved for the tapped point. No custom
+    // typed text and no centroid are substituted here.
+    const resolved = await reverseGeocode(newCoords.latitude, newCoords.longitude);
+    const formatted =
+      resolved && resolved !== 'Current Location' ? resolved : 'Pinned location';
+
+    if (field === 'pickup') {
       userEditedPickupRef.current = true;
       setUserEditedPickup(true);
-      const addr = await reverseGeocode(newCoords.latitude, newCoords.longitude);
-      const formatted = addr || 'Pinned location';
       setPickup(formatted);
       setPickupPlace({ placeId: null, formatted, coordinate: newCoords });
     } else {
-      const addr = await reverseGeocode(newCoords.latitude, newCoords.longitude);
-      const formatted = addr || 'Pinned location';
       setDestination(formatted);
       setDestinationPlace({ placeId: null, formatted, coordinate: newCoords });
     }
     setRouteEndpoints(null);
+    setIsSearchActive(false);
+    setActiveField((current) => (current === field ? null : current));
   }, [activeField]);
+
+  const handlePinOnMap = useCallback((field) => {
+    // Close the search panel and keep the chosen field armed for one map tap.
+    setIsSearchActive(false);
+    setActiveField(field);
+    setPinHintField(field);
+    Keyboard.dismiss();
+  }, []);
 
   // Fetch route when both pickup and destination are present
   useEffect(() => {
@@ -449,6 +466,7 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
     Keyboard.dismiss();
     setIsSearchActive(false);
     setActiveField(null);
+    setPinHintField(null);
 
     // Determine the OTHER pin's current coords so we know if both will be set.
     const otherCoord = field === 'pickup' ? destinationCoords : pickupCoords;
@@ -592,6 +610,23 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
           fitPadding={fitPadding}
         />
 
+        {pinHintField ? (
+          <View
+            style={[styles.mapPinHint, isWideWeb && wideMapStyles.mapPinHint]}
+            pointerEvents="none"
+          >
+            <MaterialIcons
+              name="add-location-alt"
+              size={16}
+              color={ACCENT.blue}
+            />
+            <Text style={styles.mapPinHintText}>
+              Tap the map to set this{' '}
+              {pinHintField === 'pickup' ? 'pick-up' : 'destination'}
+            </Text>
+          </View>
+        ) : null}
+
         {/* Floating Header Area with Back Button, Route Distance Pill & Profile Avatar */}
         <View style={[styles.floatingHeaderArea, isWideWeb && wideMapStyles.floatingHeaderArea]} pointerEvents="box-none">
           <TouchableOpacity
@@ -681,6 +716,7 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
                 Keyboard.dismiss();
                 setIsSearchActive(false);
                 setActiveField(null);
+                setPinHintField(null);
               }}
               activeOpacity={0.7}
             >
@@ -695,6 +731,7 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
                 Keyboard.dismiss();
                 setIsSearchActive(false);
                 setActiveField(null);
+                setPinHintField(null);
               }}
               activeOpacity={0.7}
             >
@@ -769,8 +806,10 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
                     onFocus={() => {
                       setIsSearchActive(true);
                       setActiveField('pickup');
+                      setPinHintField(null);
                     }}
                     onSelect={(loc) => applySelectedPlace('pickup', loc)}
+                    onPinOnMap={() => handlePinOnMap('pickup')}
                   />
                 </View>
               </View>
@@ -798,8 +837,10 @@ export default function BookRideScreen({ userProfile, onConfirmBooking, onNaviga
                     onFocus={() => {
                       setIsSearchActive(true);
                       setActiveField('destination');
+                      setPinHintField(null);
                     }}
                     onSelect={(loc) => applySelectedPlace('destination', loc)}
+                    onPinOnMap={() => handlePinOnMap('destination')}
                   />
                 </View>
               </View>
@@ -1094,6 +1135,31 @@ const styles = StyleSheet.create({
   mapSectionCompact: {
     flex: 0.45,
     minHeight: 160,
+  },
+  mapPinHint: {
+    position: 'absolute',
+    top: 68,
+    left: 16,
+    right: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    zIndex: 40,
+    ...ELEVATION.md,
+  },
+  mapPinHintText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: ACCENT.blue,
+    flexShrink: 1,
+    textAlign: 'center',
   },
   floatingHeaderArea: {
     position: 'absolute',

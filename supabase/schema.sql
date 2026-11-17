@@ -141,6 +141,7 @@ CREATE TABLE IF NOT EXISTS trips (
   notes TEXT,
   status TEXT NOT NULL DEFAULT 'pending'
     CHECK (status IN ('pending','accepted','in_progress','completed','cancelled')),
+  pickup_selected_at TIMESTAMPTZ,
   fare DOUBLE PRECISION,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()

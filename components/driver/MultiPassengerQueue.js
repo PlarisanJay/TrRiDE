@@ -10,6 +10,12 @@ import {
   getSeatColor,
 } from '../../data/rideQueue';
 
+const SUGGESTED_STYLE = {
+  pillBg: '#fef3c7',
+  pillText: '#b45309',
+  icon: 'near-me',
+};
+
 const STATUS_STYLES = {
   [QUEUE_STATUS.WAITING]: {
     pillBg: COLORS.surfaceContainerHigh,
@@ -45,13 +51,15 @@ const STATUS_STYLES = {
 export default function MultiPassengerQueue({
   trips = [],
   seatNumbers,
-  pickupQueue = [],
   nearestDropoffId = null,
   students = {},
   dropoffDistances = {},
+  pickupDistances = {},
+  suggestedTripId = null,
   actingId = null,
   cancellingId = null,
   onPickup,
+  onSelectPickup,
   onDropoff,
   onCancel,
   onCall,
@@ -62,9 +70,7 @@ export default function MultiPassengerQueue({
       {trips.map((trip) => {
         const seatNumber = seatNumbers?.get(trip.id) || 1;
         const color = getSeatColor(seatNumber);
-        const status = getQueueStatus(trip, pickupQueue);
-        const statusStyle = STATUS_STYLES[status] || STATUS_STYLES[QUEUE_STATUS.WAITING];
-        const student = students[trip.student_id];
+        const status = getQueueStatus(trip);
         const isCancelled = status === QUEUE_STATUS.CANCELLED;
         const isDroppedOff = status === QUEUE_STATUS.DROPPED_OFF;
         const badgeColor = isCancelled
@@ -75,6 +81,11 @@ export default function MultiPassengerQueue({
         const isOnBoard = status === QUEUE_STATUS.ON_BOARD;
         const isHeading = status === QUEUE_STATUS.HEADING;
         const isWaiting = status === QUEUE_STATUS.WAITING;
+        const isSuggested = isWaiting && suggestedTripId === trip.id;
+        const statusStyle = isSuggested
+          ? SUGGESTED_STYLE
+          : STATUS_STYLES[status] || STATUS_STYLES[QUEUE_STATUS.WAITING];
+        const student = students[trip.student_id];
         const isNextDropoff = isOnBoard && nearestDropoffId === trip.id;
         const nearestDropoffSeat = nearestDropoffId
           ? seatNumbers?.get(nearestDropoffId)
@@ -82,6 +93,7 @@ export default function MultiPassengerQueue({
         const isActing = actingId === trip.id;
         const isCancelling = cancellingId === trip.id;
         const distanceText = dropoffDistances[trip.id];
+        const pickupDistanceText = pickupDistances[trip.id];
 
         return (
           <View
@@ -90,98 +102,144 @@ export default function MultiPassengerQueue({
               styles.card,
               SHADOWS.diffusion,
               isCancelled && styles.cardCancelled,
+              isSuggested && styles.cardSuggested,
               isHeading && styles.cardHeading,
               isOnBoard && styles.cardOnBoard,
               isDroppedOff && styles.cardDropped,
             ]}
           >
-            <View style={styles.header}>
-              <View style={[styles.seatBadge, { backgroundColor: badgeColor }]}>
-                <Text style={styles.seatBadgeText}>
-                  {isCancelled ? '✕' : isDroppedOff ? '✓' : `P${seatNumber}`}
-                </Text>
-              </View>
+            <TouchableOpacity
+              style={styles.cardSelectArea}
+              activeOpacity={isWaiting ? 0.8 : 1}
+              disabled={!isWaiting || Boolean(actingId)}
+              onPress={() => onSelectPickup?.(trip)}
+              accessibilityRole={isWaiting ? 'radio' : undefined}
+              accessibilityState={{
+                selected: isHeading,
+                disabled: !isWaiting || Boolean(actingId),
+              }}
+              accessibilityLabel={
+                isWaiting
+                  ? `Select ${student?.full_name || `Passenger ${seatNumber}`} for pick-up`
+                  : undefined
+              }
+            >
+              <View style={styles.header}>
+                <View style={[styles.seatBadge, { backgroundColor: badgeColor }]}>
+                  <Text style={styles.seatBadgeText}>
+                    {isCancelled ? '✕' : isDroppedOff ? '✓' : `P${seatNumber}`}
+                  </Text>
+                </View>
 
-              <UserAvatar
-                uri={student?.avatar_url}
-                name={student?.full_name || `Passenger ${seatNumber}`}
-                size={40}
-              />
-
-              <View style={styles.headerText}>
-                <Text
-                  style={[styles.name, isCancelled && styles.mutedText]}
-                  numberOfLines={1}
-                >
-                  {student?.full_name || `Passenger ${seatNumber}`}
-                </Text>
-                <Text style={styles.meta} numberOfLines={1}>
-                  {trip.passengers || 1} passenger{(trip.passengers || 1) > 1 ? 's' : ''}
-                  {distanceText ? ` • ${distanceText} to drop-off` : ''}
-                </Text>
-              </View>
-
-              <View style={[styles.statusPill, { backgroundColor: statusStyle.pillBg }]}>
-                <MaterialIcons name={statusStyle.icon} size={13} color={statusStyle.pillText} />
-                <Text style={[styles.statusPillText, { color: statusStyle.pillText }]}>
-                  {QUEUE_STATUS_LABELS[status]}
-                </Text>
-              </View>
-            </View>
-
-            <View style={styles.locations}>
-              <View style={styles.locationRow}>
-                <MaterialIcons
-                  name="trip-origin"
-                  size={16}
-                  color={isCancelled ? COLORS.outline : '#f97316'}
+                <UserAvatar
+                  uri={student?.avatar_url}
+                  name={student?.full_name || `Passenger ${seatNumber}`}
+                  size={40}
                 />
-                <Text
-                  style={[styles.locationText, isCancelled && styles.mutedText]}
-                  numberOfLines={1}
-                >
-                  {trip.pickup_text || 'Pick-up point'}
-                </Text>
-              </View>
-              <View style={styles.locationRow}>
-                <MaterialIcons
-                  name="location-on"
-                  size={16}
-                  color={isCancelled ? COLORS.outline : '#2563eb'}
-                />
-                <Text
-                  style={[styles.locationText, isCancelled && styles.mutedText]}
-                  numberOfLines={1}
-                >
-                  {trip.dest_text || 'Drop-off point'}
-                </Text>
-              </View>
-            </View>
 
-            {isHeading ? (
-              <View style={styles.hintRow}>
-                <MaterialIcons name="lock" size={13} color="#1d4ed8" />
-                <Text style={styles.hintHeading}>
-                  Locked: this passenger is the current pick-up target.
-                </Text>
-              </View>
-            ) : null}
+                <View style={styles.headerText}>
+                  <View style={styles.nameRow}>
+                    <Text
+                      style={[styles.name, isCancelled && styles.mutedText]}
+                      numberOfLines={1}
+                    >
+                      {student?.full_name || `Passenger ${seatNumber}`}
+                    </Text>
+                    {isWaiting ? (
+                      isActing ? (
+                        <ActivityIndicator size="small" color="#1d4ed8" />
+                      ) : (
+                        <MaterialIcons
+                          name="radio-button-unchecked"
+                          size={19}
+                          color={COLORS.outline}
+                        />
+                      )
+                    ) : isHeading ? (
+                      <MaterialIcons
+                        name="radio-button-checked"
+                        size={19}
+                        color="#1d4ed8"
+                      />
+                    ) : null}
+                  </View>
+                  <Text style={styles.meta} numberOfLines={1}>
+                    {trip.passengers || 1} passenger{(trip.passengers || 1) > 1 ? 's' : ''}
+                    {trip.status === 'accepted' && pickupDistanceText
+                      ? ` • ${pickupDistanceText} away`
+                      : ''}
+                    {distanceText ? ` • ${distanceText} to drop-off` : ''}
+                  </Text>
+                </View>
 
-            {isNextDropoff ? (
-              <View style={styles.hintRow}>
-                <MaterialIcons name="near-me" size={13} color="#15803d" />
-                <Text style={styles.hintDropoff}>Next drop-off by distance.</Text>
+                <View style={[styles.statusPill, { backgroundColor: statusStyle.pillBg }]}>
+                  <MaterialIcons name={statusStyle.icon} size={13} color={statusStyle.pillText} />
+                  <Text style={[styles.statusPillText, { color: statusStyle.pillText }]}>
+                    {isSuggested ? 'SUGGESTED' : QUEUE_STATUS_LABELS[status]}
+                  </Text>
+                </View>
               </View>
-            ) : null}
 
-            {isWaiting ? (
-              <View style={styles.hintRow}>
-                <MaterialIcons name="hourglass-empty" size={13} color={COLORS.onSurfaceVariant} />
-                <Text style={styles.hintWaiting}>
-                  Waiting — pick-up order is decided by the app.
-                </Text>
+              <View style={styles.locations}>
+                <View style={styles.locationRow}>
+                  <MaterialIcons
+                    name="trip-origin"
+                    size={16}
+                    color={isCancelled ? COLORS.outline : '#f97316'}
+                  />
+                  <Text
+                    style={[styles.locationText, isCancelled && styles.mutedText]}
+                    numberOfLines={1}
+                  >
+                    {trip.pickup_text || 'Pick-up point'}
+                  </Text>
+                </View>
+                <View style={styles.locationRow}>
+                  <MaterialIcons
+                    name="location-on"
+                    size={16}
+                    color={isCancelled ? COLORS.outline : '#2563eb'}
+                  />
+                  <Text
+                    style={[styles.locationText, isCancelled && styles.mutedText]}
+                    numberOfLines={1}
+                  >
+                    {trip.dest_text || 'Drop-off point'}
+                  </Text>
+                </View>
               </View>
-            ) : null}
+
+              {isHeading ? (
+                <View style={styles.hintRow}>
+                  <MaterialIcons name="navigation" size={13} color="#1d4ed8" />
+                  <Text style={styles.hintHeading}>
+                    Selected — heading to this pick-up. Tap Picked Up Passenger when they are on board.
+                  </Text>
+                </View>
+              ) : null}
+
+              {isNextDropoff ? (
+                <View style={styles.hintRow}>
+                  <MaterialIcons name="near-me" size={13} color="#15803d" />
+                  <Text style={styles.hintDropoff}>Next drop-off by distance.</Text>
+                </View>
+              ) : null}
+
+              {isWaiting ? (
+                <View style={styles.hintRow}>
+                  <MaterialIcons
+                    name={isSuggested ? 'near-me' : 'touch-app'}
+                    size={13}
+                    color={isSuggested ? '#b45309' : COLORS.onSurfaceVariant}
+                  />
+                  <Text style={isSuggested ? styles.hintSuggested : styles.hintWaiting}>
+                    {isSuggested
+                      ? 'Suggested nearest — tap this card to choose this pick-up.'
+                      : 'Tap this card to choose this pick-up.'}
+                  </Text>
+                </View>
+              ) : null}
+            </TouchableOpacity>
 
             {!isCancelled && !isDroppedOff ? (
               <View style={styles.actions}>
@@ -228,7 +286,7 @@ export default function MultiPassengerQueue({
                     ) : (
                       <>
                         <MaterialIcons name="person-pin-circle" size={19} color="#ffffff" />
-                        <Text style={styles.primaryBtnText}>Pick Up Passenger</Text>
+                        <Text style={styles.primaryBtnText}>Picked Up Passenger</Text>
                       </>
                     )}
                   </TouchableOpacity>
@@ -257,12 +315,7 @@ export default function MultiPassengerQueue({
                         : 'Waiting for drop-off turn'}
                     </Text>
                   </View>
-                ) : (
-                  <View style={styles.waitingBtn}>
-                    <MaterialIcons name="lock-clock" size={17} color={COLORS.outline} />
-                    <Text style={styles.waitingBtnText}>Not next yet</Text>
-                  </View>
-                )}
+                ) : null}
               </View>
             ) : null}
 
@@ -291,6 +344,10 @@ const styles = StyleSheet.create({
     padding: SPACING.md,
     gap: 10,
   },
+  cardSuggested: {
+    borderColor: '#fcd34d',
+    backgroundColor: '#fffbeb',
+  },
   cardHeading: {
     borderColor: '#93c5fd',
     backgroundColor: '#f8fbff',
@@ -306,6 +363,9 @@ const styles = StyleSheet.create({
   cardDropped: {
     backgroundColor: '#f8fafc',
     opacity: 0.82,
+  },
+  cardSelectArea: {
+    gap: 10,
   },
   header: {
     flexDirection: 'row',
@@ -327,11 +387,17 @@ const styles = StyleSheet.create({
   headerText: {
     flex: 1,
   },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
   name: {
     ...TYPOGRAPHY.body,
     fontSize: 15,
     fontWeight: '700',
     color: COLORS.onSurface,
+    flex: 1,
   },
   meta: {
     ...TYPOGRAPHY.caption,
@@ -396,6 +462,13 @@ const styles = StyleSheet.create({
     ...TYPOGRAPHY.caption,
     fontSize: 11,
     color: COLORS.onSurfaceVariant,
+    flex: 1,
+  },
+  hintSuggested: {
+    ...TYPOGRAPHY.caption,
+    fontSize: 11,
+    color: '#b45309',
+    fontWeight: '700',
     flex: 1,
   },
   actions: {

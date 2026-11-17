@@ -58,6 +58,21 @@ export const getDriverMultiPassengerTrips = async (driverId) => {
 };
 
 /**
+ * Choose the next passenger this driver will pick up. The server clears any
+ * previous target for the driver before setting the new one.
+ */
+export const setNextPickup = async (tripId) => {
+  if (!tripId) throw new Error('Missing trip ID');
+
+  const { data, error } = await supabase.rpc('set_next_pickup', {
+    p_trip_id: tripId,
+  });
+
+  if (error) throw error;
+  return data === true;
+};
+
+/**
  * Persist the derived fixed-segment match for audit/route filtering.
  * No-op until approved road-segment data is configured.
  */

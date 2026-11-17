@@ -289,7 +289,7 @@ export default function OrderDetailsScreen({ userProfile, tripId, onGoBack, onNa
       mounted = false;
       clearInterval(pollTimer);
     };
-  }, [trip?.id, trip?.status, trip?.driver_id, trip?.accepted_at]);
+  }, [trip?.id, trip?.status, trip?.driver_id, trip?.accepted_at, trip?.pickup_selected_at]);
 
   const handleCancelPress = async () => {
     if (trip?.status === 'in_progress') {

@@ -24,7 +24,16 @@ const NAV_TABS = [
   { key: 'Profile', icon: 'person', label: 'Profile' },
 ];
 
-export default function StudentDashboardScreen({ userProfile, onNavigate, onBookRide, activeTripId, onViewTrip, onCancelTrip }) {
+export default function StudentDashboardScreen({
+  userProfile,
+  onNavigate,
+  onBookRide,
+  activeTripId,
+  onViewTrip,
+  onCancelTrip,
+  acceptancePopupAcknowledged = false,
+  onAcknowledgeAcceptancePopup,
+}) {
   const [activeTrip, setActiveTrip] = useState(null);
   const [activeDriver, setActiveDriver] = useState(null);
   const [tripLoading, setTripLoading] = useState(false);
@@ -37,7 +46,7 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
   const [unreadNotifCount, setUnreadNotifCount] = useState(0);
   const activeDriverRef = useRef(null);
   const profileFetchFailed = useRef(false);
-  const prevStatusRef = useRef(null);
+  const acceptPopupShownRef = useRef(null);
 
   // Load live driver availability (poll every 10s) and tick the count on change
   const liveDotScale = useRef(new Animated.Value(1)).current;
@@ -167,10 +176,19 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
     ]).start();
   };
 
+  const closeAcceptPopup = useCallback(() => {
+    setShowAcceptPopup(false);
+    if (activeTrip?.id) {
+      onAcknowledgeAcceptancePopup?.(activeTrip.id);
+    }
+  }, [activeTrip?.id, onAcknowledgeAcceptancePopup]);
+
   const handleNavPress = (key) => {
     animateTabPress(key);
     setActiveTab(key);
-    setShowAcceptPopup(false);
+    if (showAcceptPopup) {
+      closeAcceptPopup();
+    }
     onNavigate(key);
   };
 
@@ -207,7 +225,7 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
       setActiveDriver(null);
       activeDriverRef.current = null;
       profileFetchFailed.current = false;
-      prevStatusRef.current = null;
+      setShowAcceptPopup(false);
       return;
     }
 
@@ -220,7 +238,6 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
       setTripLoading(true);
       await fetchTrip();
       setTripLoading(false);
-      prevStatusRef.current = activeTrip?.status || null;
     })();
 
     unsub = subscribeToTrip(activeTripId, async (updated) => {
@@ -248,19 +265,41 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
   }, [activeTripId, fetchTrip]);
 
   useEffect(() => {
-    if (activeTrip && activeTrip.status === 'accepted' && activeDriver && prevStatusRef.current !== 'accepted') {
-      setShowAcceptPopup(true);
-      sendLocalNotification(
-        'Ride Accepted! 🚗',
-        `${activeDriver.full_name || 'A driver'} has accepted your ride request.`,
-        { tripId: activeTrip.id }
-      );
-      prevStatusRef.current = 'accepted';
+    if (
+      !activeTrip ||
+      activeTrip.id !== activeTripId ||
+      activeTrip.status !== 'accepted' ||
+      !activeDriver
+    ) {
+      return;
     }
-    if (activeTrip && activeTrip.status === 'pending') {
-      prevStatusRef.current = 'pending';
+    if (acceptancePopupAcknowledged) return;
+    if (acceptPopupShownRef.current === activeTrip.id) return;
+
+    // Show and acknowledge once per trip. The acknowledgement lives in App.js
+    // so switching tabs (which unmounts this screen) cannot replay the popup
+    // or its local notification.
+    acceptPopupShownRef.current = activeTrip.id;
+    setShowAcceptPopup(true);
+    onAcknowledgeAcceptancePopup?.(activeTrip.id);
+    sendLocalNotification(
+      'Ride Accepted! 🚗',
+      `${activeDriver.full_name || 'A driver'} has accepted your ride request.`,
+      { tripId: activeTrip.id }
+    );
+  }, [
+    activeTrip,
+    activeTripId,
+    activeDriver,
+    acceptancePopupAcknowledged,
+    onAcknowledgeAcceptancePopup,
+  ]);
+
+  useEffect(() => {
+    if (activeTrip && activeTrip.status !== 'accepted') {
+      setShowAcceptPopup(false);
     }
-  }, [activeTrip, activeDriver]);
+  }, [activeTrip?.status]);
 
   const activeTripDistInfo = useMemo(() => {
     if (!activeTrip?.pickup_lat || !activeTrip?.dest_lat) return null;
@@ -524,7 +563,7 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
         visible={showAcceptPopup}
         transparent
         animationType="fade"
-        onRequestClose={() => setShowAcceptPopup(false)}
+        onRequestClose={closeAcceptPopup}
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -563,7 +602,7 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
               <TouchableOpacity
                 style={styles.modalBtnDismiss}
                 activeOpacity={0.8}
-                onPress={() => setShowAcceptPopup(false)}
+                onPress={closeAcceptPopup}
               >
                 <Text style={styles.modalBtnDismissText}>Dismiss</Text>
               </TouchableOpacity>
@@ -571,7 +610,7 @@ export default function StudentDashboardScreen({ userProfile, onNavigate, onBook
                 style={styles.modalBtnView}
                 activeOpacity={0.8}
                 onPress={() => {
-                  setShowAcceptPopup(false);
+                  closeAcceptPopup();
                   onViewTrip(activeTripId);
                 }}
               >

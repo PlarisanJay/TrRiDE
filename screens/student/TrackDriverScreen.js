@@ -40,6 +40,7 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
   const [cancelLocked, setCancelLocked] = useState(false);
 
   const mapRef = useRef(null);
+  const routeAnchorRef = useRef(null);
   const isWideWeb = useWideWeb();
   const hasHandledCancelRef = useRef(false);
 
@@ -102,54 +103,187 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
     };
   }, [tripId]);
 
-  // Fallback / initial driver position based on trip status
-  useEffect(() => {
-    if (!trip?.pickup_lat || !trip?.pickup_lng) return;
-
-    if (!driverCoords && trip.driver_id) {
-      if (trip.status === 'accepted') {
-        // Driver approaching pickup (~400m offset)
-        setDriverCoords({
-          latitude: trip.pickup_lat + 0.0032,
-          longitude: trip.pickup_lng - 0.0025,
-        });
-        setDriverStatusText('ON THE WAY');
-      } else if (trip.status === 'in_progress') {
-        // Driver between pickup and destination
-        const midLat = trip.dest_lat ? (trip.pickup_lat + trip.dest_lat) / 2 : trip.pickup_lat;
-        const midLng = trip.dest_lng ? (trip.pickup_lng + trip.dest_lng) / 2 : trip.pickup_lng;
-        setDriverCoords({
-          latitude: midLat,
-          longitude: midLng,
-        });
-        setDriverStatusText('DRIVING');
-      }
-    }
-  }, [trip?.pickup_lat, trip?.pickup_lng, trip?.dest_lat, trip?.dest_lng, trip?.status, trip?.driver_id, driverCoords]);
-
-  // Route calculation
+  // Route calculation. The only fabricated driver position in this screen was
+  // the old fallback block; it is intentionally gone. Without a real GPS
+  // broadcast the tracker waits and the route stays empty.
   useEffect(() => {
     let isMounted = true;
-    if (trip?.pickup_lat && trip?.dest_lat) {
-      const p = { latitude: trip.pickup_lat, longitude: trip.pickup_lng };
-      const d = { latitude: trip.dest_lat, longitude: trip.dest_lng };
-      fetchRoute(p, d).then((res) => {
-        if (isMounted && res) {
+    const controller =
+      typeof AbortController !== 'undefined' ? new AbortController() : null;
+
+    const clearRoute = () => {
+      if (!isMounted) return;
+      setRouteCoordinates([]);
+      setRouteDistText('');
+      setRouteDurText('');
+    };
+
+    if (
+      !trip?.pickup_lat ||
+      !trip?.pickup_lng ||
+      !trip?.dest_lat ||
+      !trip?.dest_lng
+    ) {
+      clearRoute();
+      routeAnchorRef.current = null;
+      return () => {
+        isMounted = false;
+        controller?.abort();
+      };
+    }
+
+    const pickup = { latitude: trip.pickup_lat, longitude: trip.pickup_lng };
+    const destination = { latitude: trip.dest_lat, longitude: trip.dest_lng };
+    const isApproach =
+      trip.status === 'accepted' && Boolean(trip.pickup_selected_at);
+    const routeMode = isApproach ? 'approach' : 'trip';
+    const previous = routeAnchorRef.current;
+    const modeChanged =
+      previous?.mode !== routeMode || previous?.tripId !== trip.id;
+    const tripKey = `${trip.id}|${trip.status}|${trip.pickup_lat}|${trip.pickup_lng}|${trip.dest_lat}|${trip.dest_lng}`;
+
+    // Clear immediately when switching between the trip route and the live
+    // driver-to-pickup approach route, or when the trip itself changes.
+    if (modeChanged || (routeMode === 'trip' && previous?.key !== tripKey)) {
+      clearRoute();
+    }
+
+    if (isApproach) {
+      if (!driverCoords) {
+        clearRoute();
+        routeAnchorRef.current = {
+          mode: 'approach',
+          tripId: trip.id,
+          lat: null,
+          lng: null,
+          waiting: true,
+        };
+        return () => {
+          isMounted = false;
+          controller?.abort();
+        };
+      }
+
+      const movedMeters =
+        previous?.mode === 'approach' &&
+        previous?.tripId === trip.id &&
+        previous.lat != null
+          ? haversineDistance(
+              previous.lat,
+              previous.lng,
+              driverCoords.latitude,
+              driverCoords.longitude
+            ) * 1000
+          : Infinity;
+
+      // Only recalculate the live approach after meaningful movement.
+      if (
+        !modeChanged &&
+        previous?.mode === 'approach' &&
+        previous?.tripId === trip.id &&
+        movedMeters < 30
+      ) {
+        return () => {
+          isMounted = false;
+          controller?.abort();
+        };
+      }
+
+      routeAnchorRef.current = {
+        mode: 'approach',
+        tripId: trip.id,
+        lat: driverCoords.latitude,
+        lng: driverCoords.longitude,
+      };
+
+      fetchRoute(
+        driverCoords,
+        pickup,
+        controller ? { signal: controller.signal } : {}
+      )
+        .then((res) => {
+          if (!isMounted || controller?.signal.aborted || !res) return;
           setRouteCoordinates(res.coordinates || []);
           setRouteDistText(res.distanceText || '');
           setRouteDurText(res.durationText || '');
-        }
-      }).catch(() => {
-        if (isMounted) {
-          const distKm = haversineDistance(trip.pickup_lat, trip.pickup_lng, trip.dest_lat, trip.dest_lng);
+        })
+        .catch(() => {
+          if (!isMounted || controller?.signal.aborted) return;
+          setRouteCoordinates([]);
+          const distKm = haversineDistance(
+            driverCoords.latitude,
+            driverCoords.longitude,
+            pickup.latitude,
+            pickup.longitude
+          );
           setRouteDistText(formatDistanceText(Math.round(distKm * 1000)));
-          const estMins = Math.max(1, Math.round(distKm * 3));
-          setRouteDurText(formatDurationText(estMins));
-        }
-      });
+          setRouteDurText(
+            formatDurationText(Math.max(1, Math.round(distKm * 3)))
+          );
+        });
+
+      return () => {
+        isMounted = false;
+        controller?.abort();
+      };
     }
-    return () => { isMounted = false; };
-  }, [trip?.pickup_lat, trip?.pickup_lng, trip?.dest_lat, trip?.dest_lng]);
+
+    // Your own trip route (pick-up to destination). It does not depend on the
+    // driver's live position, so it is not refetched on every GPS tick.
+    if (
+      !modeChanged &&
+      previous?.mode === 'trip' &&
+      previous?.key === tripKey
+    ) {
+      return () => {
+        isMounted = false;
+        controller?.abort();
+      };
+    }
+
+    routeAnchorRef.current = { mode: 'trip', tripId: trip.id, key: tripKey };
+
+    fetchRoute(
+      pickup,
+      destination,
+      controller ? { signal: controller.signal } : {}
+    )
+      .then((res) => {
+        if (!isMounted || controller?.signal.aborted || !res) return;
+        setRouteCoordinates(res.coordinates || []);
+        setRouteDistText(res.distanceText || '');
+        setRouteDurText(res.durationText || '');
+      })
+      .catch(() => {
+        if (!isMounted || controller?.signal.aborted) return;
+        setRouteCoordinates([]);
+        const distKm = haversineDistance(
+          pickup.latitude,
+          pickup.longitude,
+          destination.latitude,
+          destination.longitude
+        );
+        setRouteDistText(formatDistanceText(Math.round(distKm * 1000)));
+        setRouteDurText(
+          formatDurationText(Math.max(1, Math.round(distKm * 3)))
+        );
+      });
+
+    return () => {
+      isMounted = false;
+      controller?.abort();
+    };
+  }, [
+    trip?.id,
+    trip?.status,
+    trip?.pickup_lat,
+    trip?.pickup_lng,
+    trip?.dest_lat,
+    trip?.dest_lng,
+    trip?.pickup_selected_at,
+    driverCoords?.latitude,
+    driverCoords?.longitude,
+  ]);
 
   // Map markers: Driver, Pickup, Destination
   const markers = useMemo(() => {
@@ -169,6 +303,7 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
         coordinate: { latitude: trip.dest_lat, longitude: trip.dest_lng },
         type: 'destination',
         label: 'Drop-off',
+        badgeText: 'DROP',
         color: ACCENT.blue,
       });
     }
@@ -242,7 +377,7 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
       mounted = false;
       clearInterval(pollTimer);
     };
-  }, [trip?.id, trip?.status, trip?.driver_id, trip?.accepted_at]);
+  }, [trip?.id, trip?.status, trip?.driver_id, trip?.accepted_at, trip?.pickup_selected_at]);
 
   const handleCall = () => {
     if (driver?.phone) {
@@ -326,6 +461,14 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
     );
   }
 
+  const isApproachRoute =
+    trip.status === 'accepted' && Boolean(trip.pickup_selected_at);
+  const isStandbyStatus =
+    trip.status === 'accepted' &&
+    Boolean(driverCoords) &&
+    driverStatusText === 'STANDBY' &&
+    !trip.pickup_selected_at;
+
   return (
     <View style={styles.container}>
       {/* Top Map Section - Identical Placement to BookRideScreen */}
@@ -392,10 +535,26 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
 
           {trip.status === 'accepted' && (
             <View style={styles.statusRow}>
-              <View style={styles.statusBadgeAccepted}>
-                <View style={styles.pulseDot} />
-                <Text style={styles.statusTextAccepted}>
-                  {driverStatusText === 'STANDBY' ? 'Driver is on standby at pickup' : 'Driver is on the way to pick you up'}
+              <View
+                style={[
+                  styles.statusBadgeAccepted,
+                  isStandbyStatus && styles.statusBadgeStandby,
+                ]}
+              >
+                <View
+                  style={[styles.pulseDot, isStandbyStatus && styles.pulseDotStandby]}
+                />
+                <Text
+                  style={[
+                    styles.statusTextAccepted,
+                    isStandbyStatus && styles.statusTextStandby,
+                  ]}
+                >
+                  {!driverCoords
+                    ? 'Locating driver...'
+                    : trip.pickup_selected_at || driverStatusText !== 'STANDBY'
+                      ? 'Driver is on the way to pick you up'
+                      : 'Waiting for the driver to select your pick-up'}
                 </Text>
               </View>
             </View>
@@ -405,7 +564,11 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
             <View style={styles.statusRow}>
               <View style={styles.statusBadgeAccepted}>
                 <View style={styles.pulseDot} />
-                <Text style={styles.statusTextAccepted}>En route to your destination</Text>
+                <Text style={styles.statusTextAccepted}>
+                  {driverCoords
+                    ? 'En route to your destination'
+                    : 'Trip in progress — locating driver...'}
+                </Text>
               </View>
             </View>
           )}
@@ -433,7 +596,9 @@ export default function TrackDriverScreen({ userProfile, tripId, onCancelTrip, o
           {/* Trip Info Card */}
           <View style={[styles.tripCard]}>
             <View style={styles.tripCardHeader}>
-              <Text style={styles.tripCardTitle}>Trip Route</Text>
+              <Text style={styles.tripCardTitle}>
+                {isApproachRoute ? 'Driver Approach' : 'Trip Route'}
+              </Text>
               {routeDistText && routeDurText ? (
                 <View style={styles.routeDistanceBadge}>
                   <Text style={styles.routeDistanceBadgeText}>📍 {routeDistText} • ⏱️ {routeDurText}</Text>
@@ -682,6 +847,15 @@ const styles = StyleSheet.create({
     height: 8,
     borderRadius: 4,
     backgroundColor: COLORS.secondary,
+  },
+  statusBadgeStandby: {
+    backgroundColor: 'rgba(217,119,6,0.12)',
+  },
+  pulseDotStandby: {
+    backgroundColor: '#d97706',
+  },
+  statusTextStandby: {
+    color: '#b45309',
   },
   driverCard: {
     flexDirection: 'row',

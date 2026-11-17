@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, TextInput, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { COLORS, SPACING, ROUNDED } from '../theme';
-import { GEOAPIFY_AUTOCOMPLETE_URL, TOLEDO_SEARCH_BIAS, normalizeGeoapifyFeature, toCoordinate } from '../config/mapConfig';
+import { GEOAPIFY_AUTOCOMPLETE_URL, TOLEDO_SEARCH_BIAS, haversineDistance, normalizeGeoapifyFeature, toCoordinate } from '../config/mapConfig';
 import { searchToledoLocations } from '../data/toledoLocations';
 
 const GEOAPIFY_API_KEY = process.env.EXPO_PUBLIC_GEOAPIFY_API_KEY;
@@ -15,6 +15,7 @@ export default function PlacesAutocomplete({
   value,
   onChangeText,
   onSelect,
+  onPinOnMap,
   onFocus,
   onBlur,
   style,
@@ -25,7 +26,9 @@ export default function PlacesAutocomplete({
   const [suggestions, setSuggestions] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
+  const [showNoResults, setShowNoResults] = useState(false);
   const debounceRef = useRef(null);
+  const inputRef = useRef(null);
 
   useEffect(() => {
     setQuery(value || '');
@@ -64,6 +67,7 @@ export default function PlacesAutocomplete({
     if (!text || text.trim().length < 2) {
       setSuggestions([]);
       setShowDropdown(false);
+      setShowNoResults(false);
       setLoading(false);
       return;
     }
@@ -77,14 +81,18 @@ export default function PlacesAutocomplete({
     const localMatches = searchToledoLocations(trimmed)
       .map(toLocalSuggestion)
       .filter(Boolean);
-    if (localMatches.length > 0) {
-      setSuggestions(localMatches);
-      setShowDropdown(true);
-    }
 
-    // 2. Fetch Geoapify for supplementary/street-level addresses.
-    // 400 ms debounce + AbortController: the request for an older keystroke
-    // can never overwrite the suggestions for the current one.
+    // Never leave the previous query's results on screen while the new
+    // request is running. Local matches can stay visible immediately.
+    setSuggestions(localMatches.slice(0, 8));
+    setShowDropdown(localMatches.length > 0);
+    setShowNoResults(false);
+
+    // 2. Fetch Geoapify twice in parallel:
+    //    - the normal address/street autocomplete
+    //    - amenity/POI autocomplete for beaches, hotels, resorts, restaurants
+    // 400 ms debounce + AbortController: requests for an older keystroke can
+    // never overwrite the suggestions for the current one.
     debounceRef.current = setTimeout(async () => {
       const controller = new AbortController();
       abortRef.current = controller;
@@ -95,65 +103,142 @@ export default function PlacesAutocomplete({
           .replace(/\bbrgy\.?\b/gi, 'Barangay ')
           .replace(/\bbgy\.?\b/gi, 'Barangay ');
 
-        const params = new URLSearchParams({
-          text: normalizedText,
-          bias: `proximity:${TOLEDO_SEARCH_BIAS.longitude},${TOLEDO_SEARCH_BIAS.latitude}`,
-          filter: `circle:${TOLEDO_SEARCH_BIAS.longitude},${TOLEDO_SEARCH_BIAS.latitude},${TOLEDO_SEARCH_BIAS.radiusMeters}`,
-          countrycode: 'ph',
-          limit: '6',
-          apiKey: GEOAPIFY_API_KEY,
-        });
-
-        const res = await fetch(`${GEOAPIFY_AUTOCOMPLETE_URL}?${params}`, {
-          signal: controller.signal,
-        });
-        const data = await res.json();
-        if (controller.signal.aborted) return;
-
-        if (data.features && Array.isArray(data.features)) {
-          const apiItems = data.features
+        const requestPlaces = async (extraParams = {}) => {
+          const params = new URLSearchParams({
+            text: normalizedText,
+            bias: `proximity:${TOLEDO_SEARCH_BIAS.longitude},${TOLEDO_SEARCH_BIAS.latitude}`,
+            filter: `circle:${TOLEDO_SEARCH_BIAS.longitude},${TOLEDO_SEARCH_BIAS.latitude},${TOLEDO_SEARCH_BIAS.radiusMeters}`,
+            countrycode: 'ph',
+            limit: '8',
+            apiKey: GEOAPIFY_API_KEY,
+            ...extraParams,
+          });
+          const res = await fetch(`${GEOAPIFY_AUTOCOMPLETE_URL}?${params}`, {
+            signal: controller.signal,
+          });
+          if (!res.ok) return [];
+          const data = await res.json();
+          if (!Array.isArray(data?.features)) return [];
+          return data.features
             .map(normalizeGeoapifyFeature)
             .filter(Boolean)
             .map((place) => ({
-              id: place.placeId || `${place.coordinate.latitude}-${place.coordinate.longitude}-${place.formatted}`,
+              id:
+                place.placeId ||
+                `${place.coordinate.latitude}-${place.coordinate.longitude}-${place.formatted}`,
               ...place,
               isLocal: false,
             }));
+        };
 
-          // Merge by normalized title, then by coordinate. API results are
-          // written last so a precise Geoapify coordinate replaces a local
-          // centroid with the same name.
-          const byTitle = new Map();
-          const keyFor = (item) =>
-            String(item.title || item.formatted || '').trim().toLowerCase();
-          [...localMatches, ...apiItems].forEach((item) => {
-            const key = keyFor(item);
-            if (!key) return;
-            byTitle.set(key, item);
-          });
+        const [addressResult, poiResult] = await Promise.allSettled([
+          requestPlaces(),
+          requestPlaces({ type: 'amenity' }),
+        ]);
+        if (controller.signal.aborted) return;
 
-          const deduped = [];
-          const seenCoords = new Set();
-          for (const item of byTitle.values()) {
-            const coordKey = `${item.coordinate.latitude.toFixed(5)},${item.coordinate.longitude.toFixed(5)}`;
-            if (seenCoords.has(coordKey)) continue;
-            seenCoords.add(coordKey);
-            deduped.push(item);
+        const addressItems =
+          addressResult.status === 'fulfilled' ? addressResult.value : [];
+        const poiItems = poiResult.status === 'fulfilled' ? poiResult.value : [];
+        const apiItems = [...addressItems, ...poiItems];
+
+        const queryText = normalizedText.trim().toLowerCase();
+        const queryWordCount = queryText.split(/\s+/).filter(Boolean).length;
+        const rankFor = (item) => {
+          const title = String(item.title || item.formatted || '')
+            .trim()
+            .toLowerCase();
+          if (!queryText) return 3;
+          if (title === queryText) return 0;
+          if (title.startsWith(queryText)) return 1;
+          if (title.includes(queryText)) return 2;
+          return 3;
+        };
+        const distanceFor = (item) =>
+          haversineDistance(
+            TOLEDO_SEARCH_BIAS.latitude,
+            TOLEDO_SEARCH_BIAS.longitude,
+            item.coordinate.latitude,
+            item.coordinate.longitude
+          );
+
+        // A one-word query is usually a category ("beach", "hotel") or a
+        // barangay, so the nearest matches are the most useful. For a full
+        // place name ("Days Hotel"), exact/prefix name matches come first.
+        const preferDistance = queryWordCount <= 1;
+        apiItems.sort((a, b) => {
+          if (!preferDistance) {
+            const rankDiff = rankFor(a) - rankFor(b);
+            if (rankDiff !== 0) return rankDiff;
           }
+          return distanceFor(a) - distanceFor(b);
+        });
 
-          setSuggestions(deduped.slice(0, 8));
-          setShowDropdown(deduped.length > 0);
-        } else if (localMatches.length > 0) {
-          setSuggestions(localMatches);
-          setShowDropdown(true);
-        }
+        const titleKey = (item) =>
+          String(item.title || item.formatted || '').trim().toLowerCase();
+        const apiTitleKeys = new Set(
+          apiItems.map(titleKey).filter(Boolean)
+        );
+        const localOnly = localMatches.filter(
+          (item) => !apiTitleKeys.has(titleKey(item))
+        );
+
+        // Deduplicate by Geoapify place id first, then by coordinate. Same-name
+        // records that are very close together are duplicate OSM entries; the
+        // same name at a genuinely different location is kept.
+        const merged = [];
+        const seenPlaceIds = new Set();
+        const seenCoords = new Set();
+        const seenTitlePoints = [];
+        [...localOnly, ...apiItems].forEach((item) => {
+          if (!item?.coordinate) return;
+          const placeKey = item.placeId ? String(item.placeId) : null;
+          if (placeKey && seenPlaceIds.has(placeKey)) return;
+          if (placeKey) seenPlaceIds.add(placeKey);
+          const coordKey = `${item.coordinate.latitude.toFixed(
+            5
+          )},${item.coordinate.longitude.toFixed(5)}`;
+          if (seenCoords.has(coordKey)) return;
+
+          const title = titleKey(item);
+          const isNearDuplicate =
+            Boolean(title) &&
+            seenTitlePoints.some(
+              (entry) =>
+                entry.title === title &&
+                haversineDistance(
+                  entry.latitude,
+                  entry.longitude,
+                  item.coordinate.latitude,
+                  item.coordinate.longitude
+                ) *
+                  1000 <
+                  250
+            );
+          if (isNearDuplicate) return;
+
+          seenCoords.add(coordKey);
+          if (title) {
+            seenTitlePoints.push({
+              title,
+              latitude: item.coordinate.latitude,
+              longitude: item.coordinate.longitude,
+            });
+          }
+          merged.push(item);
+        });
+
+        const finalSuggestions = merged.slice(0, 8);
+        setSuggestions(finalSuggestions);
+        setShowNoResults(finalSuggestions.length === 0);
+        setShowDropdown(true);
       } catch (e) {
-        if (e?.name === 'AbortError') return;
-        // In case of network error, keep local matches
-        if (localMatches.length > 0) {
-          setSuggestions(localMatches);
-          setShowDropdown(true);
-        }
+        if (e?.name === 'AbortError' || controller.signal.aborted) return;
+        // In case of network error, keep local matches and offer the map pin
+        // fallback instead of leaving stale results on screen.
+        setSuggestions(localMatches.slice(0, 8));
+        setShowNoResults(localMatches.length === 0);
+        setShowDropdown(true);
       } finally {
         if (abortRef.current === controller) {
           abortRef.current = null;
@@ -178,8 +263,24 @@ export default function PlacesAutocomplete({
     setQuery('');
     setSuggestions([]);
     setShowDropdown(false);
+    setShowNoResults(false);
     setLoading(false);
     onChangeText?.('');
+  };
+
+  const handlePinOnMap = () => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    const text = query.trim();
+    setSuggestions([]);
+    setShowDropdown(false);
+    setShowNoResults(false);
+    setLoading(false);
+    inputRef.current?.blur?.();
+    onPinOnMap?.(text);
   };
 
   const handleSelect = (item) => {
@@ -199,13 +300,44 @@ export default function PlacesAutocomplete({
     setQuery(formatted);
     setShowDropdown(false);
     setSuggestions([]);
+    setShowNoResults(false);
     onSelect?.({ text: formatted, ...place });
   };
 
   const getItemIcon = (item) => {
-    if (item.category === 'school') return 'school';
-    if (item.category === 'shopping') return 'shopping-bag';
-    if (item.category === 'hospital') return 'local-hospital';
+    const title = String(item.title || '').toLowerCase();
+    if (item.category === 'beach' || title.includes('beach')) {
+      return 'beach-access';
+    }
+    if (
+      item.category === 'accommodation' ||
+      title.includes('hotel') ||
+      title.includes('resort') ||
+      title.includes('pension') ||
+      title.includes('inn')
+    ) {
+      return 'hotel';
+    }
+    if (
+      item.category === 'catering' ||
+      title.includes('restaurant') ||
+      title.includes('cafe') ||
+      title.includes('coffee')
+    ) {
+      return 'restaurant';
+    }
+    if (item.category === 'tourism') return 'attractions';
+    if (item.category === 'leisure') return 'park';
+    if (item.category === 'entertainment') return 'local-activity';
+    if (item.category === 'healthcare' || item.category === 'hospital') {
+      return 'local-hospital';
+    }
+    if (item.category === 'education' || item.category === 'school') {
+      return 'school';
+    }
+    if (item.category === 'commercial' || item.category === 'shopping') {
+      return 'shopping-bag';
+    }
     if (item.category === 'transport') return 'directions-boat';
     if (item.category === 'civic') return 'account-balance';
     return 'location-on';
@@ -227,6 +359,7 @@ export default function PlacesAutocomplete({
         ) : null}
 
         <TextInput
+          ref={inputRef}
           style={styles.input}
           placeholder={placeholder}
           placeholderTextColor="#94a3b8"
@@ -252,7 +385,7 @@ export default function PlacesAutocomplete({
         ) : null}
       </View>
 
-      {showDropdown && suggestions.length > 0 && (
+      {showDropdown && (suggestions.length > 0 || showNoResults) && (
         <ScrollView
           style={styles.dropdown}
           contentContainerStyle={styles.dropdownContent}
@@ -282,6 +415,40 @@ export default function PlacesAutocomplete({
               </View>
             </TouchableOpacity>
           ))}
+
+          {showNoResults ? (
+            <View style={styles.noResultsRow}>
+              <Text style={styles.noResultsText}>
+                No matching address or place found.
+              </Text>
+            </View>
+          ) : null}
+
+          {onPinOnMap ? (
+            <TouchableOpacity
+              style={styles.pinOnMapItem}
+              onPress={handlePinOnMap}
+              activeOpacity={0.7}
+            >
+              <View style={[styles.iconCircle, styles.pinOnMapIconCircle]}>
+                <MaterialIcons
+                  name="add-location-alt"
+                  size={18}
+                  color="#b45309"
+                />
+              </View>
+              <View style={styles.textColumn}>
+                <Text style={styles.pinOnMapTitle}>
+                  {"Can't find it? Pin it on the map"}
+                </Text>
+                <Text style={styles.noResultsText} numberOfLines={2}>
+                  {showNoResults
+                    ? 'Tap the exact spot for this place'
+                    : 'Choose the exact spot on the map'}
+                </Text>
+              </View>
+            </TouchableOpacity>
+          ) : null}
         </ScrollView>
       )}
     </View>
@@ -354,6 +521,33 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#f1f5f9',
     backgroundColor: '#ffffff',
+  },
+  pinOnMapItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#fde68a',
+    backgroundColor: '#fffbeb',
+  },
+  pinOnMapIconCircle: {
+    backgroundColor: '#fef3c7',
+  },
+  pinOnMapTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#b45309',
+    marginBottom: 2,
+  },
+  noResultsRow: {
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+  },
+  noResultsText: {
+    fontSize: 12,
+    color: '#64748b',
+    lineHeight: 17,
   },
   iconCircle: {
     width: 32,

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   StyleSheet,
   StatusBar,
@@ -65,6 +65,7 @@ function AppRouter() {
   const [screenHistory, setScreenHistory] = useState([]);
   const [initializing, setInitializing] = useState(true);
   const [activeTripId, setActiveTripId] = useState(null);
+  const [acknowledgedAcceptanceTrips, setAcknowledgedAcceptanceTrips] = useState(() => new Set());
   const [chatTripId, setChatTripId] = useState(null);
   const [isInChat, setIsInChat] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -103,6 +104,16 @@ function AppRouter() {
   userProfileRef.current = userProfile;
   const currentScreenRef = useRef(currentScreen);
   currentScreenRef.current = currentScreen;
+
+  const acknowledgeAcceptancePopup = useCallback((tripId) => {
+    if (!tripId) return;
+    setAcknowledgedAcceptanceTrips((prev) => {
+      if (prev.has(tripId)) return prev;
+      const next = new Set(prev);
+      next.add(tripId);
+      return next;
+    });
+  }, []);
 
   // Check for existing session on mount
   useEffect(() => {
@@ -458,6 +469,7 @@ function AppRouter() {
     setUserRole(role);
     setUserProfile(profile);
     setScreenHistory([]);
+    setAcknowledgedAcceptanceTrips(new Set());
     setDriverOnline(role === 'driver');
     if (role === 'driver' && profile?.id) {
       setDriverOnlineStatus(profile.id, true).catch(() => {});
@@ -481,6 +493,7 @@ function AppRouter() {
     setUserRole(null);
     setUserProfile(null);
     setScreenHistory([]);
+    setAcknowledgedAcceptanceTrips(new Set());
     setDriverOnline(false);
     setCurrentScreen('Login');
   };
@@ -582,6 +595,10 @@ function AppRouter() {
                 onNavigate={(target, params) => navigateTo(target, params)}
                 onBookRide={() => navigateTo('BookRide')}
                 activeTripId={activeTripId}
+                acceptancePopupAcknowledged={Boolean(
+                  activeTripId && acknowledgedAcceptanceTrips.has(activeTripId)
+                )}
+                onAcknowledgeAcceptancePopup={acknowledgeAcceptancePopup}
                 onViewTrip={(tripId) => {
                   setActiveTripId(tripId);
                   navigateTo('OrderDetails');

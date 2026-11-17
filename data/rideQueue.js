@@ -2,9 +2,10 @@
 // Pure queue helpers for multi-passenger rides.
 //
 // Rules implemented here:
-//   • Pick-up order = acceptance time (first accepted is picked up first).
+//   • Pick-up target = the driver's explicit choice. Acceptance order is only
+//     a stable display fallback; it never selects a passenger automatically.
 //   • Drop-off order = nearest drop-off first, recalculated from live GPS.
-//   • Only the first waiting passenger is the locked pick-up target.
+//   • Only the selected waiting passenger is the locked pick-up target.
 //   • Seat numbers stay stable for the whole trip, even after a cancellation.
 //
 // No Supabase calls live in this file, so it is safe to unit test and safe
@@ -90,11 +91,46 @@ export const assignSeatNumbers = (trips = []) => {
   return map;
 };
 
-export const getPickupQueue = (trips = []) =>
-  sortByAcceptance(trips.filter((trip) => trip?.status === 'accepted'));
+export const getSelectedPickupTrip = (trips = []) => {
+  const selected = (trips || []).find(
+    (trip) => trip?.status === 'accepted' && Boolean(trip?.pickup_selected_at)
+  );
+  return selected || null;
+};
+
+export const getPickupQueue = (trips = []) => {
+  const accepted = (trips || []).filter((trip) => trip?.status === 'accepted');
+  const selected = getSelectedPickupTrip(accepted);
+
+  if (!selected) return sortByAcceptance(accepted);
+
+  return [
+    selected,
+    ...sortByAcceptance(accepted.filter((trip) => trip.id !== selected.id)),
+  ];
+};
 
 export const getOnBoardTrips = (trips = []) =>
   trips.filter((trip) => trip?.status === 'in_progress');
+
+export const getPickupDistanceMeters = (trip, coords) => {
+  if (
+    !coords?.latitude ||
+    !coords?.longitude ||
+    trip?.pickup_lat == null ||
+    trip?.pickup_lng == null
+  ) {
+    return null;
+  }
+  return (
+    haversineDistance(
+      coords.latitude,
+      coords.longitude,
+      trip.pickup_lat,
+      trip.pickup_lng
+    ) * 1000
+  );
+};
 
 export const getDropoffDistanceMeters = (trip, coords) => {
   if (
@@ -133,13 +169,13 @@ export const getDropoffOrder = (trips = [], driverCoords = null) => {
   });
 };
 
-export const getQueueStatus = (trip, pickupQueue = []) => {
+export const getQueueStatus = (trip) => {
   if (!trip) return QUEUE_STATUS.WAITING;
   if (trip.status === 'cancelled') return QUEUE_STATUS.CANCELLED;
   if (trip.status === 'completed') return QUEUE_STATUS.DROPPED_OFF;
   if (trip.status === 'in_progress') return QUEUE_STATUS.ON_BOARD;
   if (trip.status === 'accepted') {
-    return pickupQueue[0]?.id === trip.id
+    return trip.pickup_selected_at
       ? QUEUE_STATUS.HEADING
       : QUEUE_STATUS.WAITING;
   }
@@ -149,15 +185,20 @@ export const getQueueStatus = (trip, pickupQueue = []) => {
 /**
  * A passenger is locked out of cancelling only when:
  *   • the driver currently has 2 or more active trips, AND
- *   • this trip is the first waiting pick-up target.
- * With one passenger (or when the flag is off at the call site), this
- * returns false and the old cancel behaviour is preserved.
+ *   • this trip is the driver's explicitly selected pick-up target.
+ * With one passenger, no selection, or the feature flag off, this returns
+ * false and the passenger keeps the normal cancel behaviour.
  */
 export const isTripPickupLocked = (trip, driverTrips = []) => {
-  if (!trip || trip.status !== 'accepted') return false;
+  if (!trip || trip.status !== 'accepted' || !trip.pickup_selected_at) {
+    return false;
+  }
   const activeTrips = (driverTrips || []).filter(isActiveTrip);
   if (activeTrips.length < 2) return false;
-  return getPickupQueue(activeTrips)[0]?.id === trip.id;
+  return activeTrips.some(
+    (activeTrip) =>
+      activeTrip.id === trip.id && Boolean(activeTrip.pickup_selected_at)
+  );
 };
 
 export const countActiveSeats = (trips = []) =>
